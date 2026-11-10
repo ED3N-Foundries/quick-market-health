@@ -8,6 +8,7 @@ export type HistorySample = {
   checks: { id: string; ok: boolean; ms: number | null }[]
   downReason: string | null
   bootId: string | null
+  hangCount: number | null
 }
 
 export function pushHistory(list: HistorySample[], report: HealthReport, cap: number): HistorySample[] {
@@ -19,6 +20,7 @@ export function pushHistory(list: HistorySample[], report: HealthReport, cap: nu
     checks: report.checks.map((c) => ({ id: c.id, ok: c.ok, ms: c.ms })),
     downReason: report.downReason ?? null,
     bootId: report.process?.bootId ?? null,
+    hangCount: report.hangs?.count ?? null,
   }
   const out = [...list, next]
   while (out.length > cap) out.shift()

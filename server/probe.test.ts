@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { loadHealthEnv, wsFromHttp } from "./env"
 import { avgMs, pushHistory, uptimePct } from "./history"
-import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
+import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, parseHangs, parseSelfTail, parseTailMap, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
 
 describe("wsFromHttp", () => {
   test("maps http/https to ws/wss + /ws", () => {
@@ -93,6 +93,45 @@ describe("history", () => {
     )
     expect(list[0]?.downReason).toContain("/api/state")
     expect(list[0]?.bootId).toBe("abc")
+  })
+})
+
+describe("hang forensics parsing", () => {
+  test("tails sort worst-first and cap keys", () => {
+    const tails = parseTailMap({
+      fast: { count: 100, avgMs: 2, maxMs: 5, p50: 2, p90: 3, p95: 4, p99: 5 },
+      slow: { count: 10, avgMs: 50, maxMs: 1500, p50: 4, p90: 100, p95: 800, p99: 1200 },
+      empty: { count: 0, avgMs: 0, maxMs: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
+    })
+    expect(Object.keys(tails)).toEqual(["slow", "fast"])
+    expect(tails.slow?.p99).toBe(1200)
+    expect(parseTailMap(null)).toEqual({})
+    expect(parseTailMap({ bad: "nope" })).toEqual({})
+  })
+  test("hangs parse snake_case, sort worst-first, tolerate junk", () => {
+    const hz = parseHangs({
+      recent: [
+        { id: 1, ts: 1000, duration_ms: 300, kind: "lag", name: "event-loop", detail: "slow-query:advance 150ms" },
+        { id: 2, ts: 2000, durationMs: 1500, kind: "slow-query", name: "advance", detail: null },
+        { junk: true },
+      ],
+      hour: { count: 2, maxMs: 1500, lastTs: 2000 },
+    })
+    expect(hz.recent.length).toBe(2)
+    expect(hz.recent[0]?.durationMs).toBe(1500)
+    expect(hz.count).toBe(2)
+    expect(parseHangs(null).recent).toEqual([])
+    expect(parseHangs({ recent: "no" }).recent).toEqual([])
+  })
+  test("self tail lifts p99s and disk bytes with MB-ready numbers", () => {
+    const tail = parseSelfTail({
+      samples: [{ ts: 123, lag_p99: 260, req_p99: 40, q_p99: 120, tick_p99: 8, board_p99: 12, peers: 3, disk_used: 10485760, disk_size: 104857600, db_bytes: 5242880 }],
+    })
+    expect(tail?.lagP99).toBe(260)
+    expect(tail?.diskUsed).toBe(10485760)
+    expect(tail?.dbBytes).toBe(5242880)
+    expect(parseSelfTail({})).toBeNull()
+    expect(parseSelfTail(null)).toBeNull()
   })
 })
 

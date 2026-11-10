@@ -61,6 +61,46 @@ export type MarketProcess = {
   counters: { uncaught: number | null; unhandled: number | null; requestErrors: number | null; tickErrors: number | null } | null
 } | null
 
+export type TailStat = {
+  count: number | null
+  avgMs: number | null
+  maxMs: number | null
+  p50: number | null
+  p90: number | null
+  p95: number | null
+  p99: number | null
+}
+
+export type HangEntry = {
+  id: number | null
+  ts: number | null
+  durationMs: number | null
+  kind: string | null
+  name: string | null
+  detail: string | null
+}
+
+export type HangSummary = {
+  recent: HangEntry[]
+  count: number | null
+  maxMs: number | null
+  lastTs: number | null
+}
+
+/** Latest 10s self-sample tail snapshot (null when the market is down/old). */
+export type SelfTail = {
+  at: number | null
+  lagP99: number | null
+  reqP99: number | null
+  qP99: number | null
+  tickP99: number | null
+  boardP99: number | null
+  peers: number | null
+  diskUsed: number | null
+  diskSize: number | null
+  dbBytes: number | null
+} | null
+
 export type TrackerState = {
   restartCount: number
   lastRestartAt: number | null
@@ -92,6 +132,13 @@ export type HealthReport = {
   /** Previous market run info (crash reason survives restarts), null when unknown. */
   previous: MarketPrevious
   tracking: TrackerState
+  /** Hang suspects from the market's own stall detector (null-safe, never affects status). */
+  hangs: HangSummary
+  /** Merged-histogram pXX per route / query group over the last hour (bounded). */
+  routeTails: Record<string, TailStat>
+  queryTails: Record<string, TailStat>
+  /** Latest 10s self-sample snapshot (disk + p99s for in-person debugging). */
+  selfTail: SelfTail
   summary: {
     chainKey: string | null
     chainName: string | null
@@ -480,7 +527,113 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
   }
 }
 
-type ProcessProbe = { process: MarketProcess; previous: MarketPrevious; reached: boolean }
+type ProcessProbe = {
+  process: MarketProcess
+  previous: MarketPrevious
+  reached: boolean
+  hangs: HangSummary
+  routeTails: Record<string, TailStat>
+  queryTails: Record<string, TailStat>
+  selfTail: SelfTail
+}
+
+function numOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function strOrNull(value: unknown, max = 300): string | null {
+  if (typeof value !== "string") return null
+  return value.slice(0, max)
+}
+
+/** Parse a {name: {count/avgMs/maxMs/p50/p90/p95/p99}} map; caps keys, drops junk. */
+export function parseTailMap(value: unknown, cap = 32): Record<string, TailStat> {
+  const out: Record<string, TailStat> = {}
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out
+  const entries = Object.entries(value as Record<string, unknown>)
+  // Worst-first by p99 so the cap keeps the interesting rows for hang forensics.
+  entries.sort(([, a], [, b]) => {
+    const pa = (a as Record<string, unknown> | null)?.p99
+    const pb = (b as Record<string, unknown> | null)?.p99
+    return (typeof pb === "number" ? pb : -1) - (typeof pa === "number" ? pa : -1)
+  })
+  for (const [name, raw] of entries.slice(0, cap)) {
+    if (!name || typeof raw !== "object" || !raw) continue
+    const row = raw as Record<string, unknown>
+    const count = numOrNull(row.count)
+    if (count == null || count <= 0) continue
+    out[name.slice(0, 96)] = {
+      count,
+      avgMs: numOrNull(row.avgMs),
+      maxMs: numOrNull(row.maxMs),
+      p50: numOrNull(row.p50),
+      p90: numOrNull(row.p90),
+      p95: numOrNull(row.p95),
+      p99: numOrNull(row.p99),
+    }
+  }
+  return out
+}
+
+/** Parse the market's hang forensics blob; always returns a shape, never throws. */
+export function parseHangs(value: unknown, cap = 20): HangSummary {
+  const empty: HangSummary = { recent: [], count: null, maxMs: null, lastTs: null }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return empty
+  const body = value as Record<string, unknown>
+  const recentRaw = Array.isArray(body.recent) ? body.recent.slice(0, cap) : []
+  const recent: HangEntry[] = []
+  for (const item of recentRaw) {
+    if (!item || typeof item !== "object") continue
+    const row = item as Record<string, unknown>
+    const durationMs = numOrNull(row.durationMs ?? row.duration_ms)
+    if (durationMs == null) continue
+    recent.push({
+      id: numOrNull(row.id),
+      ts: numOrNull(row.ts),
+      durationMs,
+      kind: strOrNull(row.kind, 32),
+      name: strOrNull(row.name, 96),
+      detail: strOrNull(row.detail, 300),
+    })
+  }
+  recent.sort((a, b) => (b.durationMs ?? -1) - (a.durationMs ?? -1))
+  const hour = body.hour && typeof body.hour === "object" ? (body.hour as Record<string, unknown>) : null
+  return {
+    recent,
+    count: hour ? numOrNull(hour.count) : null,
+    maxMs: hour ? numOrNull(hour.maxMs ?? hour.m) : null,
+    lastTs: hour ? numOrNull(hour.lastTs ?? hour.t) : null,
+  }
+}
+
+/** Latest self-sample: p99 tails + disk/db bytes for the in-person view. */
+export function parseSelfTail(value: unknown): SelfTail {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const body = value as Record<string, unknown>
+  const samplesRaw = body.samples
+  const samples = Array.isArray(samplesRaw) ? samplesRaw : Array.isArray((body as { selfHealth?: unknown }).selfHealth) ? [] : []
+  const latest = samples.length > 0 && typeof samples[0] === "object" ? (samples[0] as Record<string, unknown>) : null
+  if (!latest) return null
+  const tail: Exclude<SelfTail, null> = {
+    at: numOrNull(latest.ts),
+    lagP99: numOrNull(latest.lag_p99),
+    reqP99: numOrNull(latest.req_p99),
+    qP99: numOrNull(latest.q_p99),
+    tickP99: numOrNull(latest.tick_p99),
+    boardP99: numOrNull(latest.board_p99),
+    peers: numOrNull(latest.peers),
+    diskUsed: numOrNull(latest.disk_used),
+    diskSize: numOrNull(latest.disk_size),
+    dbBytes: numOrNull(latest.db_bytes),
+  }
+  if (
+    tail.at == null && tail.lagP99 == null && tail.reqP99 == null && tail.qP99 == null &&
+    tail.tickP99 == null && tail.boardP99 == null && tail.diskUsed == null && tail.dbBytes == null
+  ) {
+    return null
+  }
+  return tail
+}
 
 function asMarketProcess(value: unknown): { process: MarketProcess; previous: MarketPrevious } {
   if (!value || typeof value !== "object") return { process: null, previous: null }
@@ -539,6 +692,7 @@ function asMarketProcess(value: unknown): { process: MarketProcess; previous: Ma
 }
 
 async function probeMarketProcess(base: string, env: HealthEnv): Promise<ProcessProbe> {
+  const empty = (): ProcessProbe => ({ process: null, previous: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
   // Prefer the dedicated internal endpoint; fall back to /api/health on older markets.
   for (const path of ["/api/status", "/api/health"]) {
     try {
@@ -546,12 +700,22 @@ async function probeMarketProcess(base: string, env: HealthEnv): Promise<Process
       if (!res.ok) continue
       const body = parseJson(text)
       const { process, previous } = asMarketProcess(body)
-      if (process) return { process, previous, reached: true }
+      if (!process) continue
+      const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+      return {
+        process,
+        previous,
+        reached: true,
+        hangs: parseHangs(obj.hangs),
+        routeTails: parseTailMap(obj.routePctl ?? obj.routePctlAll),
+        queryTails: parseTailMap(obj.queryPctl ?? obj.queryPctlAll),
+        selfTail: parseSelfTail(obj.selfHealth),
+      }
     } catch {
       // try the next path
     }
   }
-  return { process: null, previous: null, reached: false }
+  return empty()
 }
 
 export async function runProbe(env: HealthEnv, prevTracking: TrackerState = emptyTracker()): Promise<HealthReport> {
@@ -766,6 +930,10 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
     process: proc.process,
     previous: proc.previous,
     tracking,
+    hangs: proc.hangs,
+    routeTails: proc.routeTails,
+    queryTails: proc.queryTails,
+    selfTail: proc.selfTail,
     summary: {
       chainKey: cfg?.chainKey ?? null,
       chainName: cfg?.chainName ?? null,

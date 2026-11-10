@@ -84,7 +84,22 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 </header>
 <main>
 <section class="card"><h2>lifecycle</h2><div id="lifecycle" class="lifecycle">waiting for first probe…</div></section>
-<section class="card"><h2>boot</h2><div id="boot" class="kv"><span class="dim">waiting for first probe…</span></div></section>
+<section class="card"><h2>hangs · tails</h2><div id="hangmeta" class="big">waiting for first probe…</div><div id="diskline" class="meta" style="margin:4px 0 8px"></div><div class="tblwrap"><table>
+<thead><tr><th>when</th><th>duration</th><th>kind</th><th>name</th><th>detail</th></tr></thead>
+<tbody id="hangs"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
+</table></div><div class="tblwrap" style="margin-top:10px"><table>
+<thead><tr><th>slowest routes · p99 (1h)</th><th>p50</th><th>p99</th><th>max</th><th>n</th></tr></thead>
+<tbody id="routetails"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
+</table></div><div class="tblwrap" style="margin-top:10px"><table>
+<thead><tr><th>slowest queries · p99 (1h)</th><th>p50</th><th>p99</th><th>max</th><th>n</th></tr></thead>
+<tbody id="querytails"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
+</table></div></section>
+<section class="card"><h2>crash reasons · restarts · outage</h2><div id="crash" class="kv"></div><div id="downreason" class="meta" style="margin-top:8px"></div></section>
+<section class="card"><h2>market state</h2><div id="state" class="kv"></div></section>
+<section class="card"><h2>pieces · ping · ms</h2><div class="tblwrap"><table>
+<thead><tr><th>piece</th><th>ms</th><th>state</th></tr></thead>
+<tbody id="checks"><tr><td colspan="3" class="dim">waiting for first probe…</td></tr></tbody>
+</table></div></section>
 <section class="card"><h2>containers</h2><div class="tblwrap"><table class="wide">
 <thead><tr><th>container</th><th>state</th><th>health</th><th>uptime</th><th>restarts</th><th>exit</th><th>cpu</th><th>mem</th></tr></thead>
 <tbody id="containers"><tr><td colspan="8" class="dim">waiting for first probe…</td></tr></tbody>
@@ -98,16 +113,10 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 </div>
 <pre id="logs">waiting for first probe…</pre>
 </section>
-<section class="card"><h2>pieces · ping · ms</h2><div class="tblwrap"><table>
-<thead><tr><th>piece</th><th>ms</th><th>state</th></tr></thead>
-<tbody id="checks"><tr><td colspan="3" class="dim">waiting for first probe…</td></tr></tbody>
-</table></div></section>
-<section class="card"><h2>query speeds</h2><div class="tblwrap"><table class="wide">
+<section class="card"><details><summary>external probe speeds (superseded by tails above)</summary><div class="tblwrap"><table class="wide">
 <thead><tr><th>piece</th><th>now</th><th>avg</th><th>p95</th><th></th></tr></thead>
 <tbody id="speeds"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
-</table></div><div class="meta">avg / p95 over recent probes</div></section>
-<section class="card"><h2>market state</h2><div id="state" class="kv"></div></section>
-<section class="card"><h2>crash reasons · restarts · outage</h2><div id="crash" class="kv"></div><div id="downreason" class="meta" style="margin-top:8px"></div></section>
+</table></div><div class="meta">avg / p95 over recent probes · internal p99 tails above are authoritative for hangs</div></details></section>
 <section class="card"><h2>price venues</h2><div id="venues" class="grid"></div></section>
 <section class="card"><h2>history</h2><div id="histmeta" class="big"></div>
 <div class="legend"><span><span class="dot ok"></span>online</span><span><span class="dot" style="background:var(--warn)"></span>degraded</span><span><span class="dot" style="background:var(--info)"></span>starting</span><span><span class="dot bad"></span>offline</span></div>
@@ -120,7 +129,11 @@ const LOG_EVERY = 3;
 const pill = document.getElementById('pill');
 const sub = document.getElementById('sub');
 const lifecycleEl = document.getElementById('lifecycle');
-const bootEl = document.getElementById('boot');
+const hangmeta = document.getElementById('hangmeta');
+const diskline = document.getElementById('diskline');
+const hangsEl = document.getElementById('hangs');
+const routeTailsEl = document.getElementById('routetails');
+const queryTailsEl = document.getElementById('querytails');
 const containersEl = document.getElementById('containers');
 const checksEl = document.getElementById('checks');
 const speedsEl = document.getElementById('speeds');
@@ -146,6 +159,10 @@ function fmtDT(ms){ if(ms==null||!isFinite(ms)) return '—'; const d = new Date
 function fmtPct(v){ if(v==null||!isFinite(v)) return '—'; return v.toFixed(1)+'%'; }
 function fmtBytes(v){ if(v==null||!isFinite(v)) return '—'; if(v<1024) return Math.round(v)+' B'; if(v<1048576) return (v/1024).toFixed(1)+' KB'; if(v<1073741824) return (v/1048576).toFixed(1)+' MB'; return (v/1073741824).toFixed(2)+' GB'; }
 function fmtMem(used, limit){ if(used==null) return '—'; return fmtBytes(used) + (limit!=null&&isFinite(limit) ? ' / ' + fmtBytes(limit) : ''); }
+function fmtMoney(micros){ if(micros==null||!isFinite(micros)) return '—'; return '$' + (micros/1e6).toFixed(2); }
+function fmtBytesMB(v){ if(v==null||!isFinite(v)) return '—'; return v.toLocaleString('en-US') + ' B · ' + (v/1048576).toFixed(1) + ' MB'; }
+function tailClass(ms){ if(ms==null||!isFinite(ms)) return ''; if(ms>=1000) return 'bad'; if(ms>=250) return 'warn'; return ''; }
+function tailCell(ms){ const c = tailClass(ms); return '<span class="ms"' + (c ? ' style="color:var(--' + (c==='bad'?'bad':'warn') + ');font-weight:700"' : '') + '>' + fmtMs(ms) + '</span>'; }
 function esc(s){ return String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 async function tick(){
   try {
@@ -188,6 +205,7 @@ async function tick(){
     const s = r.summary || {};
     const kv = (k,v) => '<div><b>'+k+'</b><span>'+esc(v)+'</span></div>';
     renderSpeeds(r, h);
+    renderHangs(r);
     stateEl.innerHTML =
       kv('chain', (s.chainKey??'—') + ' / ' + (s.chainName??'')) +
       kv('feed', s.feed ?? '—') +
@@ -196,16 +214,14 @@ async function tick(){
       kv('tape', (s.tapePoints??'—') + ' pts · age ' + fmtAge(s.tapeAgeMs)) +
       kv('join window', (s.joinId??'—') + ' · closes in ' + fmtAge(s.windowCloseInMs)) +
       kv('live market', s.liveId ?? '—') +
-      kv('pool up/down', (s.poolUpMicros??'—') + ' / ' + (s.poolDownMicros??'—')) +
+      kv('pool up/down', fmtMoney(s.poolUpMicros) + ' / ' + fmtMoney(s.poolDownMicros)) +
       kv('handoff', s.handoff ?? 'none') +
       kv('ws open/first/rtt', fmtMs(s.wsConnectMs) + ' / ' + fmtMs(s.wsFirstMsgMs) + ' / ' + fmtMs(s.wsRttMs));
     venuesEl.innerHTML = (r.venues||[]).map(v =>
       '<div class="venue' + (v.stale?' stale':'') + '"><div class="v">' + esc(v.venue) + ' ' + (v.stale?'· stale':'· fresh') + '</div>' +
       '<div>' + esc(v.price ?? 'no price') + '</div>' +
       '<div class="dim">age ' + fmtAge(v.ageMs) + ' · ' + esc(v.role ?? '') + '</div>' +
-      '<div class="dim">' + esc(v.reason ?? '') + '</div>' +
-      '<div class="dim">swing ' + esc(v.swing ?? '—') + ' · gap ' + esc(v.gap ?? '—') + '</div>' +
-      '<div class="dim">' + esc(v.feed ?? 'no socket') + '</div></div>'
+      '<div class="dim">' + esc([v.reason, v.swing != null ? ('swing ' + v.swing) : null, v.gap != null ? ('gap ' + v.gap) : null, v.feed].filter(Boolean).join(' · ') || '—') + '</div></div>'
     ).join('') || '<span class="dim">no venue data</span>';
     const p = r.process || {};
     const prev = r.previous || {};
@@ -214,20 +230,18 @@ async function tick(){
     crashEl.innerHTML =
       kv('market status', (p.status ?? r.status ?? '—') + (p.reason ? ' · ' + p.reason : '')) +
       kv('boot', (p.bootId ? String(p.bootId).slice(0,8) : '—') + ' · #' + (p.bootCount ?? '—') + ' · up ' + fmtAge(p.uptimeMs)) +
+      kv('market booted', fmtDT(p.bootAt)) +
+      kv('hangs last hour', (r.hangs && r.hangs.count != null ? r.hangs.count : '—') + (r.hangs && r.hangs.maxMs != null ? ' · worst ' + fmtMs(r.hangs.maxMs) : '')) +
       kv('last error', (p.lastError && p.lastError.message) ? ((p.lastError.kind ?? '') + ': ' + p.lastError.message) : 'none') +
       kv('last signal', p.lastSignal ?? 'none') +
       kv('prev run', prev.bootId ? ((prev.clean ? 'clean' : 'UNCLEAN') + ' · ' + (prev.reason ?? '')) : 'first boot / unknown') +
       kv('restarts seen', (t.restartCount ?? 0) + (t.lastRestartAt ? ' · last ' + new Date(t.lastRestartAt).toLocaleTimeString() : '')) +
       kv('restart reason', t.lastRestartReason ?? (prev.reason ?? '—')) +
+      (cons.length ? kv(cons[0].name + ' started', cons[0].startedAt ? fmtDT(cons[0].startedAt) + ' · up ' + fmtAge(cons[0].uptimeMs) : '—') : '') +
       kv('outage', (t.consecutiveDown ? (t.consecutiveDown + ' failing probes since ' + (t.downSince ? new Date(t.downSince).toLocaleTimeString() : '?')) : 'none') + (t.lastOkAt ? ' · last ok ' + new Date(t.lastOkAt).toLocaleTimeString() : '')) +
       kv('memory rss/heap', memMb(p.memory && p.memory.rss) + ' / ' + memMb(p.memory && p.memory.heapUsed)) +
       kv('event loop lag', fmtMs(p.eventLoopLagMs)) +
       kv('counters u/r/t', ((p.counters&&p.counters.uncaught)??'—') + '/' + ((p.counters&&p.counters.unhandled)??'—') + '/' + ((p.counters&&p.counters.requestErrors)??'—') + '/' + ((p.counters&&p.counters.tickErrors)??'—') + ' (uncaught/unhandled/req/tick)');
-    bootEl.innerHTML =
-      kv('market booted', fmtDT(p.bootAt)) +
-      kv('market uptime', fmtAge(p.uptimeMs)) +
-      kv('boot count', '#' + (p.bootCount ?? '—')) +
-      cons.map(c => kv(esc(c.name) + ' started', c.startedAt ? fmtDT(c.startedAt) + ' · up ' + fmtAge(c.uptimeMs) : '—')).join('');
     downEl.textContent = r.downReason ? ('why: ' + r.downReason) : (r.status==='ok' ? 'market reports no failure reason' : '');
     if (h && h.samples) {
       const n = h.samples.length;
@@ -284,7 +298,49 @@ function tipHtml(x){
     'probe ' + fmtMs(x.totalMs) +
     (fails ? '<br>fail: ' + esc(fails) : '<br>all pieces ok') +
     (x.downReason ? '<br>' + esc(String(x.downReason).slice(0, 200)) : '') +
-    (x.bootId ? '<br>boot ' + esc(String(x.bootId).slice(0, 8)) : '');
+    (x.bootId ? '<br>boot ' + esc(String(x.bootId).slice(0, 8)) : '') +
+    (x.hangCount != null ? '<br>hangs/hr: ' + x.hangCount : '');
+}
+function renderHangs(r){
+  const hz = r.hangs || { recent: [], count: null, maxMs: null, lastTs: null };
+  const st = r.selfTail || null;
+  if (!hz.recent || !hz.recent.length) {
+    hangmeta.textContent = (hz.count === 0 || hz.count == null) && (r.process || r.selfTail)
+      ? 'no hangs in the last hour — healthy'
+      : (r.process ? 'no hang rows reported' : 'tails unknown — market down');
+  } else {
+    const worst = hz.recent[0];
+    hangmeta.textContent = 'hour: ' + (hz.count ?? '?') + ' hangs · worst ' + fmtMs(hz.maxMs ?? worst.durationMs) +
+      (hz.lastTs ? ' · last ' + new Date(hz.lastTs).toLocaleTimeString() : '') +
+      (st && st.lagP99 != null ? ' · lag p99 ' + fmtMs(st.lagP99) : '') +
+      (st && st.tickP99 != null ? ' · tick p99 ' + fmtMs(st.tickP99) : '');
+  }
+  diskline.textContent = st
+    ? 'disk ' + fmtBytesMB(st.diskUsed) + ' used / ' + fmtBytesMB(st.diskSize) + ' · db ' + fmtBytesMB(st.dbBytes) +
+      (st.peers != null ? ' · peers ' + st.peers : '') +
+      (st.reqP99 != null || st.qP99 != null ? ' · req p99 ' + fmtMs(st.reqP99) + ' / query p99 ' + fmtMs(st.qP99) : '')
+    : 'disk/db unknown — market down or older version';
+  hangsEl.innerHTML = (hz.recent && hz.recent.length)
+    ? hz.recent.slice(0, 8).map(x =>
+        '<tr><td class="ms">' + (x.ts ? new Date(x.ts).toLocaleTimeString() : '—') + '</td>' +
+        '<td>' + tailCell(x.durationMs) + '</td>' +
+        '<td>' + esc(x.kind ?? '—') + '</td>' +
+        '<td>' + esc(x.name ?? '—') + '</td>' +
+        '<td class="dim" title="' + esc(x.detail ?? '') + '">' + esc((x.detail ?? '—').slice(0, 80)) + '</td></tr>'
+      ).join('')
+    : '<tr><td colspan="5" class="dim">' + (r.process ? 'no hangs recorded' : 'unknown — market unreachable') + '</td></tr>';
+  const tailRows = (m) => Object.entries(m || {})
+    .map(([name, v]) => ({ name, p50: v.p50, p99: v.p99, maxMs: v.maxMs, count: v.count }))
+    .sort((a, b) => (b.p99 ?? -1) - (a.p99 ?? -1))
+    .slice(0, 8);
+  const rows = tailRows(r.routeTails);
+  routeTailsEl.innerHTML = rows.length
+    ? rows.map(x => '<tr><td>' + esc(x.name) + '</td><td>' + tailCell(x.p50) + '</td><td>' + tailCell(x.p99) + '</td><td class="ms">' + fmtMs(x.maxMs) + '</td><td class="ms">' + (x.count ?? '—') + '</td></tr>').join('')
+    : '<tr><td colspan="5" class="dim">' + (r.process ? 'no route tail data' : 'unknown — market unreachable') + '</td></tr>';
+  const qrows = tailRows(r.queryTails);
+  queryTailsEl.innerHTML = qrows.length
+    ? qrows.map(x => '<tr><td>' + esc(x.name) + '</td><td>' + tailCell(x.p50) + '</td><td>' + tailCell(x.p99) + '</td><td class="ms">' + fmtMs(x.maxMs) + '</td><td class="ms">' + (x.count ?? '—') + '</td></tr>').join('')
+    : '<tr><td colspan="5" class="dim">' + (r.process ? 'no query tail data' : 'unknown — market unreachable') + '</td></tr>';
 }
 function showTip(bar, cx, cy){
   const x = barSamples[Number(bar.dataset.i)];
