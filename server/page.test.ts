@@ -14,10 +14,15 @@ describe("renderPage", () => {
 
   test("contains the expected card anchors", () => {
     const html = renderPage(loadHealthEnv({}))
-    for (const id of ["pill", "sub", "lifecycle", "hangs", "hangmeta", "diskline", "routetails", "querytails", "containers", "logs", "checks", "speeds", "bars", "tip", "raw", "copyjson"]) {
+    for (const id of ["pill", "sub", "lifecycle", "hangs", "hangmeta", "diskline", "containers", "logs", "checks", "speeds", "bars", "tip", "raw", "copyjson"]) {
       expect(html).toContain(`id="${id}"`)
     }
     expect(html).not.toContain('id="boot"')
+    expect(html).not.toContain('id="routetails"')
+    expect(html).not.toContain('id="querytails"')
+    expect(html).toContain("<h2>hangs</h2>")
+    expect(html).toContain("<h2>external probe speeds</h2>")
+    expect(html).not.toContain("superseded")
   })
 
   test("layout cannot cause page-level horizontal scroll", () => {

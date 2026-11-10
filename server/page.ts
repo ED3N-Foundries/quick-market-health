@@ -84,15 +84,9 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 </header>
 <main>
 <section class="card"><h2>lifecycle</h2><div id="lifecycle" class="lifecycle">waiting for first probe…</div></section>
-<section class="card"><h2>hangs · tails</h2><div id="hangmeta" class="big">waiting for first probe…</div><div id="diskline" class="meta" style="margin:4px 0 8px"></div><div class="tblwrap"><table>
+<section class="card"><h2>hangs</h2><div id="hangmeta" class="big">waiting for first probe…</div><div id="diskline" class="meta" style="margin:4px 0 8px"></div><div class="tblwrap"><table>
 <thead><tr><th>when</th><th>duration</th><th>kind</th><th>name</th><th>detail</th></tr></thead>
 <tbody id="hangs"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
-</table></div><div class="tblwrap" style="margin-top:10px"><table>
-<thead><tr><th>slowest routes · p99 (1h)</th><th>p50</th><th>p99</th><th>max</th><th>n</th></tr></thead>
-<tbody id="routetails"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
-</table></div><div class="tblwrap" style="margin-top:10px"><table>
-<thead><tr><th>slowest queries · p99 (1h)</th><th>p50</th><th>p99</th><th>max</th><th>n</th></tr></thead>
-<tbody id="querytails"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
 </table></div></section>
 <section class="card"><h2>crash reasons · restarts · outage</h2><div id="crash" class="kv"></div><div id="downreason" class="meta" style="margin-top:8px"></div></section>
 <section class="card"><h2>market state</h2><div id="state" class="kv"></div></section>
@@ -113,10 +107,10 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 </div>
 <pre id="logs">waiting for first probe…</pre>
 </section>
-<section class="card"><details><summary>external probe speeds (superseded by tails above)</summary><div class="tblwrap"><table class="wide">
+<section class="card"><h2>external probe speeds</h2><div class="tblwrap"><table class="wide">
 <thead><tr><th>piece</th><th>now</th><th>avg</th><th>p95</th><th></th></tr></thead>
 <tbody id="speeds"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
-</table></div><div class="meta">avg / p95 over recent probes · internal p99 tails above are authoritative for hangs</div></details></section>
+</table></div><div class="meta">avg / p95 over recent probes</div></section>
 <section class="card"><h2>price venues</h2><div id="venues" class="grid"></div></section>
 <section class="card"><h2>history</h2><div id="histmeta" class="big"></div>
 <div class="legend"><span><span class="dot ok"></span>online</span><span><span class="dot" style="background:var(--warn)"></span>degraded</span><span><span class="dot" style="background:var(--info)"></span>starting</span><span><span class="dot bad"></span>offline</span></div>
@@ -132,8 +126,6 @@ const lifecycleEl = document.getElementById('lifecycle');
 const hangmeta = document.getElementById('hangmeta');
 const diskline = document.getElementById('diskline');
 const hangsEl = document.getElementById('hangs');
-const routeTailsEl = document.getElementById('routetails');
-const queryTailsEl = document.getElementById('querytails');
 const containersEl = document.getElementById('containers');
 const checksEl = document.getElementById('checks');
 const speedsEl = document.getElementById('speeds');
@@ -304,21 +296,23 @@ function tipHtml(x){
 function renderHangs(r){
   const hz = r.hangs || { recent: [], count: null, maxMs: null, lastTs: null };
   const st = r.selfTail || null;
+  const proc = r.process || null;
+  const lag = proc && proc.eventLoopLagMs != null ? ' · lag ' + fmtMs(proc.eventLoopLagMs) : '';
   if (!hz.recent || !hz.recent.length) {
-    hangmeta.textContent = (hz.count === 0 || hz.count == null) && (r.process || r.selfTail)
-      ? 'no hangs in the last hour — healthy'
-      : (r.process ? 'no hang rows reported' : 'tails unknown — market down');
+    hangmeta.textContent = (hz.count === 0 || hz.count == null) && (proc || st)
+      ? 'no hangs in the last hour — healthy' + lag
+      : (proc ? 'no hang rows reported' + lag : 'hangs unknown — market down');
   } else {
     const worst = hz.recent[0];
     hangmeta.textContent = 'hour: ' + (hz.count ?? '?') + ' hangs · worst ' + fmtMs(hz.maxMs ?? worst.durationMs) +
-      (hz.lastTs ? ' · last ' + new Date(hz.lastTs).toLocaleTimeString() : '') +
-      (st && st.lagP99 != null ? ' · lag p99 ' + fmtMs(st.lagP99) : '') +
-      (st && st.tickP99 != null ? ' · tick p99 ' + fmtMs(st.tickP99) : '');
+      (hz.lastTs ? ' · last ' + new Date(hz.lastTs).toLocaleTimeString() : '') + lag;
   }
-  diskline.textContent = st
-    ? 'disk ' + fmtBytesMB(st.diskUsed) + ' used / ' + fmtBytesMB(st.diskSize) + ' · db ' + fmtBytesMB(st.dbBytes) +
-      (st.peers != null ? ' · peers ' + st.peers : '') +
-      (st.reqP99 != null || st.qP99 != null ? ' · req p99 ' + fmtMs(st.reqP99) + ' / query p99 ' + fmtMs(st.qP99) : '')
+  const diskUsed = proc && proc.diskUsed != null ? proc.diskUsed : (st ? st.diskUsed : null);
+  const diskSize = proc && proc.diskSize != null ? proc.diskSize : (st ? st.diskSize : null);
+  const dbBytes = proc && proc.dbBytes != null ? proc.dbBytes : (st ? st.dbBytes : null);
+  diskline.textContent = (diskUsed != null || diskSize != null || dbBytes != null)
+    ? 'disk ' + fmtBytesMB(diskUsed) + ' used / ' + fmtBytesMB(diskSize) + ' · db ' + fmtBytesMB(dbBytes) +
+      (st && st.peers != null ? ' · peers ' + st.peers : '')
     : 'disk/db unknown — market down or older version';
   hangsEl.innerHTML = (hz.recent && hz.recent.length)
     ? hz.recent.slice(0, 8).map(x =>
@@ -328,19 +322,7 @@ function renderHangs(r){
         '<td>' + esc(x.name ?? '—') + '</td>' +
         '<td class="dim" title="' + esc(x.detail ?? '') + '">' + esc((x.detail ?? '—').slice(0, 80)) + '</td></tr>'
       ).join('')
-    : '<tr><td colspan="5" class="dim">' + (r.process ? 'no hangs recorded' : 'unknown — market unreachable') + '</td></tr>';
-  const tailRows = (m) => Object.entries(m || {})
-    .map(([name, v]) => ({ name, p50: v.p50, p99: v.p99, maxMs: v.maxMs, count: v.count }))
-    .sort((a, b) => (b.p99 ?? -1) - (a.p99 ?? -1))
-    .slice(0, 8);
-  const rows = tailRows(r.routeTails);
-  routeTailsEl.innerHTML = rows.length
-    ? rows.map(x => '<tr><td>' + esc(x.name) + '</td><td>' + tailCell(x.p50) + '</td><td>' + tailCell(x.p99) + '</td><td class="ms">' + fmtMs(x.maxMs) + '</td><td class="ms">' + (x.count ?? '—') + '</td></tr>').join('')
-    : '<tr><td colspan="5" class="dim">' + (r.process ? 'no route tail data' : 'unknown — market unreachable') + '</td></tr>';
-  const qrows = tailRows(r.queryTails);
-  queryTailsEl.innerHTML = qrows.length
-    ? qrows.map(x => '<tr><td>' + esc(x.name) + '</td><td>' + tailCell(x.p50) + '</td><td>' + tailCell(x.p99) + '</td><td class="ms">' + fmtMs(x.maxMs) + '</td><td class="ms">' + (x.count ?? '—') + '</td></tr>').join('')
-    : '<tr><td colspan="5" class="dim">' + (r.process ? 'no query tail data' : 'unknown — market unreachable') + '</td></tr>';
+    : '<tr><td colspan="5" class="dim">' + (proc ? 'no hangs recorded' : 'unknown — market unreachable') + '</td></tr>';
 }
 function showTip(bar, cx, cy){
   const x = barSamples[Number(bar.dataset.i)];

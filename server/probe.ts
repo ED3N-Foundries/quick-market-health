@@ -57,6 +57,9 @@ export type MarketProcess = {
   lastError: MarketLastError
   lastSignal: string | null
   eventLoopLagMs: number | null
+  diskUsed: number | null
+  diskSize: number | null
+  dbBytes: number | null
   memory: { rss: number | null; heapUsed: number | null; heapTotal: number | null } | null
   counters: { uncaught: number | null; unhandled: number | null; requestErrors: number | null; tickErrors: number | null } | null
 } | null
@@ -659,6 +662,9 @@ function asMarketProcess(value: unknown): { process: MarketProcess; previous: Ma
       : null,
     lastSignal: typeof raw.lastSignal === "string" ? raw.lastSignal : null,
     eventLoopLagMs: typeof raw.eventLoopLagMs === "number" ? raw.eventLoopLagMs : null,
+    diskUsed: typeof raw.diskUsed === "number" ? raw.diskUsed : null,
+    diskSize: typeof raw.diskSize === "number" ? raw.diskSize : null,
+    dbBytes: typeof raw.dbBytes === "number" ? raw.dbBytes : null,
     memory: mem && typeof mem === "object"
       ? {
           rss: typeof mem.rss === "number" ? mem.rss : null,
