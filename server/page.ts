@@ -26,7 +26,8 @@ main > * { min-width:0; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; min-width:0; max-width:100%; }
 .card h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); }
 table { width:100%; border-collapse:collapse; }
-th, td { text-align:left; padding:8px 8px; border-top:1px solid var(--line); vertical-align:top; overflow-wrap:anywhere; }
+table.wide { min-width:680px; }
+th, td { text-align:left; padding:8px 8px; border-top:1px solid var(--line); vertical-align:top; }
 th { border-top:0; color:var(--dim); font-weight:600; font-size:12px; }
 .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; }
 .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); }
@@ -59,6 +60,7 @@ th { border-top:0; color:var(--dim); font-weight:600; font-size:12px; }
   th, td { padding:6px; }
   select { font-size:16px; padding:8px 10px; }
   pre { font-size:11px; }
+  .tblwrap { -webkit-overflow-scrolling:touch; }
   #copyjson { font-size:14px; padding:6px 12px; }
 }
 code, pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
@@ -83,7 +85,7 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 <main>
 <section class="card"><h2>lifecycle</h2><div id="lifecycle" class="lifecycle">waiting for first probe…</div></section>
 <section class="card"><h2>boot</h2><div id="boot" class="kv"><span class="dim">waiting for first probe…</span></div></section>
-<section class="card"><h2>containers</h2><div class="tblwrap"><table>
+<section class="card"><h2>containers</h2><div class="tblwrap"><table class="wide">
 <thead><tr><th>container</th><th>state</th><th>health</th><th>uptime</th><th>restarts</th><th>exit</th><th>cpu</th><th>mem</th></tr></thead>
 <tbody id="containers"><tr><td colspan="8" class="dim">waiting for first probe…</td></tr></tbody>
 </table></div></section>
@@ -100,7 +102,7 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 <thead><tr><th>piece</th><th>ms</th><th>state</th></tr></thead>
 <tbody id="checks"><tr><td colspan="3" class="dim">waiting for first probe…</td></tr></tbody>
 </table></div></section>
-<section class="card"><h2>query speeds</h2><div class="tblwrap"><table>
+<section class="card"><h2>query speeds</h2><div class="tblwrap"><table class="wide">
 <thead><tr><th>piece</th><th>now</th><th>avg</th><th>p95</th><th></th></tr></thead>
 <tbody id="speeds"><tr><td colspan="5" class="dim">waiting for first probe…</td></tr></tbody>
 </table></div><div class="meta">avg / p95 over recent probes</div></section>

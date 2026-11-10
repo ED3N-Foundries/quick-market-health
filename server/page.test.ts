@@ -30,5 +30,8 @@ describe("renderPage", () => {
     expect(html).toContain("overflow:hidden; max-width:100%")
     // Long log lines wrap instead of stretching the card.
     expect(html).toContain("white-space:pre-wrap")
+    // Wide tables keep readable columns and scroll inside their card.
+    expect(html).toContain("table.wide { min-width:680px; }")
+    expect(html).toContain('<table class="wide">')
   })
 })
