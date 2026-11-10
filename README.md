@@ -54,11 +54,36 @@ TARGET_URL=http://quick-market:3001 docker compose up -d --build
 
 Page: `http://<host>:3101` · JSON: `/api/check?fresh=1`, `/api/history`, `/api/health`.
 
+## Lifecycle + docker logs
+
+Besides the probe verdict (`ok` / `degraded` / `down`), every report carries a
+human `lifecycle` — `online` / `degraded` / `starting` / `offline` — plus a
+`lifecycleReason` one-liner and a `containers` array. When the market container
+is restarting, freshly started, or still inside its healthcheck start period,
+the page shows a pulsing blue **starting** badge instead of a red **down** one,
+so a boot doesn't look like an outage.
+
+Container state and log tails come from the Docker Engine API over the unix
+socket (`DOCKER_SOCK`, e.g. `/var/run/docker.sock` mounted read-only). Extra
+endpoints:
+
+- `/api/containers?fresh=1` — watched container state (running, health,
+  uptime, restarts, exit code)
+- `/api/logs?container=quick-market&tail=200` — timestamped log tail
+  (demuxed, ANSI stripped, capped at 2000 lines / 256 KB; only watched
+  containers are readable)
+
+With `DOCKER_SOCK` empty the service still works: lifecycle falls back to
+probe-error heuristics (`starting` while no probe has ever succeeded,
+`offline` after that) and the containers/logs cards say so.
+
 ## Endpoints
 
 - `/` — dashboard (auto-refresh, no build step, no external assets)
 - `/api/check?fresh=1` — full live probe report with per-check ms
 - `/api/history` — ring buffer of recent probes, uptime %, avg ms per piece
+- `/api/containers?fresh=1` — docker state for watched containers
+- `/api/logs?container=<name>&tail=<n>` — timestamped docker log tail
 - `/api/health` — this service's own liveness (`{"ok":true}`)
 
 ## Env
@@ -73,3 +98,7 @@ Page: `http://<host>:3101` · JSON: `/api/check?fresh=1`, `/api/history`, `/api/
 | `HISTORY_N` | `180` | samples kept |
 | `REFRESH_MS` | `5000` | page refresh |
 | `REQUEST_TIMEOUT_MS` | `8000` | per-probe timeout |
+| `DOCKER_SOCK` | _(empty)_ | docker socket path; empty disables container state + logs |
+| `DOCKER_CONTAINERS` | `quick-market,quick-market-agent` | watched containers (first = primary for lifecycle) |
+| `DOCKER_TIMEOUT_MS` | `2500` | docker API timeout |
+| `DOCKER_LOGS_TAIL` | `200` | default log tail lines |

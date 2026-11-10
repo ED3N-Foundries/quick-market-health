@@ -1,6 +1,12 @@
 import type { HealthEnv } from "./env"
+import { getDockerSnapshot, type ContainerSummary, type DockerSnapshot } from "./docker"
 
 export type CheckStatus = "ok" | "degraded" | "down"
+
+/** What the market is doing right now, for humans. `status` stays probe-based
+ *  (ok/degraded/down) for backwards compatibility; `lifecycle` folds in the
+ *  container state so a boot shows as `starting` instead of a scary `down`. */
+export type Lifecycle = "online" | "degraded" | "starting" | "offline" | "unknown"
 
 export type CheckResult = {
   id: string
@@ -69,6 +75,12 @@ export type HealthReport = {
   at: number
   target: string
   status: CheckStatus
+  /** Container-aware state: online / degraded / starting / offline. */
+  lifecycle: Lifecycle
+  /** One-line human reason for the lifecycle (null when online). */
+  lifecycleReason: string | null
+  /** Docker state for each watched container (empty when DOCKER_SOCK is unset). */
+  containers: ContainerSummary[]
   /** Wall-clock ms for the whole probe run. */
   totalMs: number
   checks: CheckResult[]
@@ -143,6 +155,59 @@ export function containerHintFor(error: string): string | null {
   }
   if (/abort|timeout|timed out/.test(text)) return "timeout — container hung or overloaded"
   return null
+}
+
+/** Freshly started containers need a grace window before "running but silent"
+ *  counts as offline: the market only listens after its chain boot finishes. */
+export const BOOT_GRACE_MS = 60_000
+
+export function deriveLifecycle(input: {
+  status: CheckStatus
+  checks: Pick<CheckResult, "id" | "ok" | "error">[]
+  snapshot: DockerSnapshot
+  primaryName: string
+  /** Whether any probe has ever succeeded (tracking.lastOkAt != null). */
+  everOk: boolean
+  now: number
+}): { lifecycle: Lifecycle; reason: string | null } {
+  const { status, checks, snapshot, primaryName, everOk, now } = input
+  if (status === "ok") return { lifecycle: "online", reason: null }
+  if (status === "degraded") return { lifecycle: "degraded", reason: summarizeDownReason(checks, null) }
+  const firstErr = checks.find((c) => !c.ok && c.error)?.error ?? ""
+  const hint = firstErr ? containerHintFor(firstErr) : null
+  if (!snapshot.available) {
+    // No container signal: guess from probe errors + history.
+    if (hint && !everOk) {
+      return { lifecycle: "starting", reason: `market not reachable yet — probably still booting · ${hint}` }
+    }
+    return { lifecycle: "offline", reason: hint ? `market unreachable · ${hint}` : "market unreachable" }
+  }
+  const primary = snapshot.containers.find((c) => c.name === primaryName) ?? snapshot.containers[0]
+  if (!primary) return { lifecycle: "offline", reason: "no containers watched" }
+  if (!primary.exists) return { lifecycle: "offline", reason: `container ${primary.name} not found — not deployed?` }
+  if (primary.restarting) return { lifecycle: "starting", reason: `container ${primary.name} restarting` }
+  if (primary.paused) return { lifecycle: "offline", reason: `container ${primary.name} paused` }
+  if (primary.dead) return { lifecycle: "offline", reason: `container ${primary.name} dead` }
+  if (!primary.running) {
+    if (primary.status === "created") return { lifecycle: "starting", reason: `container ${primary.name} created, not started yet` }
+    const ago = primary.finishedAt != null ? ` ${formatAge(now - primary.finishedAt)} ago` : ""
+    const code = primary.exitCode != null ? ` (exit ${primary.exitCode}${ago})` : ago ? ` (${ago.trim()})` : ""
+    const oom = primary.oomKilled ? " — OOM-killed" : ""
+    return { lifecycle: "offline", reason: `container ${primary.name} ${primary.status}${code}${oom}` }
+  }
+  if (primary.health === "starting") {
+    return { lifecycle: "starting", reason: `container ${primary.name} healthcheck still starting — market is booting` }
+  }
+  if (primary.health === "unhealthy") {
+    const streak = primary.healthFailingStreak != null ? ` (failing streak ${primary.healthFailingStreak})` : ""
+    return { lifecycle: "offline", reason: `container ${primary.name} failing healthcheck${streak}` }
+  }
+  if (primary.oomKilled) return { lifecycle: "offline", reason: `container ${primary.name} OOM-killed` }
+  if (primary.uptimeMs != null && primary.uptimeMs < BOOT_GRACE_MS) {
+    return { lifecycle: "starting", reason: `container ${primary.name} started ${formatAge(primary.uptimeMs)} ago, API not up yet` }
+  }
+  const streak = primary.healthFailingStreak != null && primary.healthFailingStreak > 0 ? ` · healthcheck failing streak ${primary.healthFailingStreak}` : ""
+  return { lifecycle: "offline", reason: hint ? `container running but API unreachable${streak} · ${hint}` : `container running but API unreachable${streak}` }
 }
 
 export function updateTracker(prev: TrackerState, report: Pick<HealthReport, "at" | "status" | "downReason" | "process" | "previous">): TrackerState {
@@ -494,6 +559,10 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
   let cfg: Cfg | null = null
   let state: Record<string, unknown> | null = null
   let feeds: Record<string, unknown> | null = null
+  // Container state resolves in parallel with the HTTP probes (cached ~3s).
+  const dockerPromise = getDockerSnapshot(env).catch(
+    (): DockerSnapshot => ({ available: false, sock: env.dockerSock || null, error: "docker snapshot threw", at: Date.now(), containers: [] }),
+  )
 
   // 1. /api/config
   try {
@@ -672,10 +741,23 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
     previous: proc.previous,
   }
   const tracking = updateTracker(prevTracking, partial)
+  const docker = await dockerPromise
+  const primaryName = env.dockerContainers[0] ?? "quick-market"
+  const { lifecycle, reason: lifecycleReason } = deriveLifecycle({
+    status,
+    checks,
+    snapshot: docker,
+    primaryName,
+    everOk: prevTracking.lastOkAt != null,
+    now: partial.at,
+  })
   const report: HealthReport = {
     at: partial.at,
     target: base,
     status,
+    lifecycle,
+    lifecycleReason,
+    containers: docker.containers,
     totalMs: performance.now() - t0,
     checks,
     downReason,

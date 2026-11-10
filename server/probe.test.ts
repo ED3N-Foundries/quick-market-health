@@ -20,6 +20,16 @@ describe("loadHealthEnv", () => {
     expect(loadHealthEnv({ TARGET_URL: "http://quick-market:3001/" }).wsTarget).toBe("ws://quick-market:3001/ws")
     expect(loadHealthEnv({ WS_TARGET: "ws://custom/ws" }).wsTarget).toBe("ws://custom/ws")
   })
+  test("docker opts default to disabled socket with watched containers", () => {
+    const env = loadHealthEnv({})
+    expect(env.dockerSock).toBe("")
+    expect(env.dockerContainers).toEqual(["quick-market", "quick-market-agent"])
+    expect(env.dockerLogsTail).toBe(200)
+    const custom = loadHealthEnv({ DOCKER_SOCK: "/var/run/docker.sock", DOCKER_CONTAINERS: "a,b , c", DOCKER_LOGS_TAIL: "50" })
+    expect(custom.dockerSock).toBe("/var/run/docker.sock")
+    expect(custom.dockerContainers).toEqual(["a", "b", "c"])
+    expect(custom.dockerLogsTail).toBe(50)
+  })
 })
 
 describe("classifyOverall", () => {

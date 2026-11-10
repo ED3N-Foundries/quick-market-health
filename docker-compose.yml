@@ -20,3 +20,13 @@ services:
       HISTORY_N: ${HISTORY_N:-180}
       REFRESH_MS: ${REFRESH_MS:-5000}
       REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-8000}
+      # Container state + log tails need the engine socket. The standalone
+      # image runs as root, so no group fix-up is needed here (the hardened
+      # deploy image drops to bun:bun and uses DOCKER_GID instead).
+      DOCKER_SOCK: ${DOCKER_SOCK:-}
+      DOCKER_CONTAINERS: ${DOCKER_CONTAINERS:-quick-market,quick-market-agent}
+      DOCKER_TIMEOUT_MS: ${DOCKER_TIMEOUT_MS:-2500}
+      DOCKER_LOGS_TAIL: ${DOCKER_LOGS_TAIL:-200}
+    # Uncomment to enable the containers/logs cards:
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock:ro

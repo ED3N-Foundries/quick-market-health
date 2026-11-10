@@ -3,6 +3,7 @@ import type { HealthReport } from "./probe"
 export type HistorySample = {
   at: number
   status: HealthReport["status"]
+  lifecycle: HealthReport["lifecycle"]
   totalMs: number
   checks: { id: string; ok: boolean; ms: number | null }[]
   downReason: string | null
@@ -13,6 +14,7 @@ export function pushHistory(list: HistorySample[], report: HealthReport, cap: nu
   const next: HistorySample = {
     at: report.at,
     status: report.status,
+    lifecycle: report.lifecycle,
     totalMs: report.totalMs,
     checks: report.checks.map((c) => ({ id: c.id, ok: c.ok, ms: c.ms })),
     downReason: report.downReason ?? null,

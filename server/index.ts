@@ -2,6 +2,7 @@ import { loadHealthEnv } from "./env"
 import { avgMs, pushHistory, uptimePct, type HistorySample } from "./history"
 import { renderPage } from "./page"
 import { emptyTracker, runProbe, type HealthReport, type TrackerState } from "./probe"
+import { clampTail, fetchContainerLogs, getDockerSnapshot } from "./docker"
 
 const env = loadHealthEnv()
 
@@ -39,6 +40,9 @@ function json(body: unknown, status = 200): Response {
 const server = Bun.serve({
   port: env.port,
   hostname: "0.0.0.0",
+  // A full probe run can take ~60s when the market is hung (each piece times
+  // out at REQUEST_TIMEOUT_MS). Keep the socket open past Bun's 10s default.
+  idleTimeout: 120,
   async fetch(req) {
     const url = new URL(req.url)
     if (req.method === "GET" && url.pathname === "/") {
@@ -62,6 +66,23 @@ const server = Bun.serve({
         uptimePct: uptimePct(history),
         avgMs: Object.fromEntries(["config", "health", "state", "feeds", "rounds", "ws", "rpc"].map((id) => [id, avgMs(history, id)])),
       })
+    }
+    if (req.method === "GET" && url.pathname === "/api/containers") {
+      try {
+        const snapshot = url.searchParams.get("fresh") === "0" ? await getDockerSnapshot(env) : await getDockerSnapshot(env, true)
+        return json(snapshot)
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, 502)
+      }
+    }
+    if (req.method === "GET" && url.pathname === "/api/logs") {
+      try {
+        const container = url.searchParams.get("container")?.trim() || env.dockerContainers[0] || "quick-market"
+        const tail = clampTail(url.searchParams.get("tail"), env.dockerLogsTail)
+        return json(await fetchContainerLogs(env, container, tail))
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, 502)
+      }
     }
     return json({ error: "Not found" }, 404)
   },

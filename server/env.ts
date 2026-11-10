@@ -7,6 +7,12 @@ export type HealthEnv = {
   historyN: number
   refreshMs: number
   requestTimeoutMs: number
+  /** Unix socket path for the Docker Engine API. Empty = docker status/logs disabled. */
+  dockerSock: string
+  /** Container names watched for lifecycle state + log tails. First entry is the primary (the market). */
+  dockerContainers: string[]
+  dockerTimeoutMs: number
+  dockerLogsTail: number
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -27,6 +33,15 @@ export function wsFromHttp(base: string): string {
   return `${clean}/ws`
 }
 
+function list(value: string | undefined, fallback: string[]): string[] {
+  if (value == null || value.trim() === "") return fallback
+  const items = value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  return items.length > 0 ? items : fallback
+}
+
 export function loadHealthEnv(env: Record<string, string | undefined> = process.env): HealthEnv {
   const targetUrl = str(env.TARGET_URL, "http://127.0.0.1:3001").replace(/\/+$/, "")
   return {
@@ -38,5 +53,9 @@ export function loadHealthEnv(env: Record<string, string | undefined> = process.
     historyN: Math.min(Math.max(Math.floor(num(env.HISTORY_N, 180)), 10), 1000),
     refreshMs: num(env.REFRESH_MS, 5_000),
     requestTimeoutMs: num(env.REQUEST_TIMEOUT_MS, 8_000),
+    dockerSock: str(env.DOCKER_SOCK, ""),
+    dockerContainers: list(env.DOCKER_CONTAINERS, ["quick-market", "quick-market-agent"]),
+    dockerTimeoutMs: num(env.DOCKER_TIMEOUT_MS, 2_500),
+    dockerLogsTail: Math.min(2000, Math.max(10, Math.floor(num(env.DOCKER_LOGS_TAIL, 200)))),
   }
 }

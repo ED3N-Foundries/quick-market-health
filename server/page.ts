@@ -8,7 +8,7 @@ export function renderPage(env: HealthEnv): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>quick-market health</title>
 <style>
-:root { color-scheme: dark; --bg:#0b0e12; --panel:#12161d; --line:#232b36; --txt:#e8edf3; --dim:#93a1b3; --ok:#34d17b; --warn:#f5b83d; --bad:#f2564d; }
+:root { color-scheme: dark; --bg:#0b0e12; --panel:#12161d; --line:#232b36; --txt:#e8edf3; --dim:#93a1b3; --ok:#34d17b; --warn:#f5b83d; --bad:#f2564d; --info:#5aa9ff; }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
 header { padding:18px 20px 10px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
@@ -17,6 +17,9 @@ h1 { font-size:18px; margin:0; }
 .pill.ok { background:rgba(52,209,123,.15); color:var(--ok); border:1px solid var(--ok); }
 .pill.degraded { background:rgba(245,184,61,.12); color:var(--warn); border:1px solid var(--warn); }
 .pill.down { background:rgba(242,86,77,.12); color:var(--bad); border:1px solid var(--bad); }
+.pill.starting { background:rgba(90,169,255,.12); color:var(--info); border:1px solid var(--info); animation:pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
+.lifecycle { color:var(--dim); font-size:12px; }
 .meta { color:var(--dim); font-size:12px; }
 main { padding:0 20px 40px; display:grid; gap:16px; max-width:1100px; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
@@ -42,6 +45,8 @@ details summary { cursor:pointer; color:var(--dim); }
 .kv { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:6px 18px; }
 .kv div b { display:block; font-size:11px; color:var(--dim); font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
 a { color:#7db8ff; }
+select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-size:12px; }
+.toolbar { display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
 </style>
 </head>
 <body>
@@ -51,6 +56,20 @@ a { color:#7db8ff; }
 <span id="sub" class="meta">connecting…</span>
 </header>
 <main>
+<section class="card"><h2>lifecycle</h2><div id="lifecycle" class="lifecycle">waiting for first probe…</div></section>
+<section class="card"><h2>containers</h2><table>
+<thead><tr><th>container</th><th>state</th><th>health</th><th>uptime</th><th>restarts</th><th>exit</th></tr></thead>
+<tbody id="containers"><tr><td colspan="6" class="dim">waiting for first probe…</td></tr></tbody>
+</table></section>
+<section class="card"><h2>docker logs</h2>
+<div class="toolbar">
+<select id="logcontainer"></select>
+<select id="logtail"><option value="100">last 100</option><option value="200" selected>last 200</option><option value="500">last 500</option><option value="1000">last 1000</option></select>
+<span id="logsmeta" class="meta"></span>
+<a id="logsraw" class="meta" href="/api/logs" target="_blank" rel="noopener">raw json</a>
+</div>
+<pre id="logs">waiting for first probe…</pre>
+</section>
 <section class="card"><h2>pieces · ping · ms</h2><table>
 <thead><tr><th>piece</th><th>ms</th><th>state</th></tr></thead>
 <tbody id="checks"><tr><td colspan="3" class="dim">waiting for first probe…</td></tr></tbody>
@@ -63,8 +82,11 @@ a { color:#7db8ff; }
 </main>
 <script>
 const REFRESH = ${env.refreshMs};
+const LOG_EVERY = 3;
 const pill = document.getElementById('pill');
 const sub = document.getElementById('sub');
+const lifecycleEl = document.getElementById('lifecycle');
+const containersEl = document.getElementById('containers');
 const checksEl = document.getElementById('checks');
 const stateEl = document.getElementById('state');
 const crashEl = document.getElementById('crash');
@@ -73,6 +95,13 @@ const venuesEl = document.getElementById('venues');
 const barsEl = document.getElementById('bars');
 const histmeta = document.getElementById('histmeta');
 const raw = document.getElementById('raw');
+const logContainerSel = document.getElementById('logcontainer');
+const logTailSel = document.getElementById('logtail');
+const logsEl = document.getElementById('logs');
+const logsMeta = document.getElementById('logsmeta');
+const logsRaw = document.getElementById('logsraw');
+let tickN = 0;
+function pillClass(lc){ return lc==='online' ? 'ok' : lc==='degraded' ? 'degraded' : lc==='starting' ? 'starting' : lc==='offline' ? 'down' : ''; }
 function fmtMs(ms){ if(ms==null||!isFinite(ms)) return '—'; if(ms<10) return ms.toFixed(1)+' ms'; return Math.round(ms)+' ms'; }
 function fmtAge(ms){ if(ms==null||!isFinite(ms)) return '—'; if(ms<1000) return Math.round(ms)+' ms'; if(ms<60000) return (ms/1000).toFixed(1)+'s'; return (ms/60000).toFixed(1)+'m'; }
 function esc(s){ return String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -82,10 +111,31 @@ async function tick(){
       fetch('/api/check?fresh=1').then(r => r.json()),
       fetch('/api/history').then(r => r.json()).catch(() => null),
     ]);
-    pill.textContent = r.status;
-    pill.className = 'pill ' + r.status;
+    pill.textContent = r.lifecycle || r.status;
+    pill.className = 'pill ' + pillClass(r.lifecycle || r.status);
     const when = new Date(r.at).toLocaleTimeString();
-    sub.textContent = r.target + ' · checked ' + when + ' · probe ' + fmtMs(r.totalMs);
+    sub.textContent = r.target + ' · checked ' + when + ' · probe ' + fmtMs(r.totalMs) + ' · probes: ' + r.status;
+    lifecycleEl.textContent = (r.lifecycle || r.status) + (r.lifecycleReason ? ' — ' + r.lifecycleReason : '');
+    const cons = r.containers || [];
+    if (!cons.length) {
+      containersEl.innerHTML = '<tr><td colspan="6" class="dim">docker not configured (DOCKER_SOCK empty) — container state unknown</td></tr>';
+    } else {
+      containersEl.innerHTML = cons.map(c => {
+        const state = c.exists ? (c.restarting ? 'restarting' : c.status + (c.running ? '' : ' (stopped)')) : 'missing';
+        const dot = !c.exists || (!c.running && !c.restarting) ? 'bad' : (c.health === 'unhealthy' ? 'bad' : 'ok');
+        const exit = c.exitCode ?? '—';
+        const restarts = (c.restartCount ?? '—');
+        return '<tr><td><span class="dot ' + dot + '"></span>' + esc(c.name) + '</td>' +
+          '<td>' + esc(state) + (c.oomKilled ? ' · OOM' : '') + (c.error ? '<div class="err">' + esc(c.error) + '</div>' : '') + '</td>' +
+          '<td>' + esc(c.health) + (c.healthFailingStreak ? ' · streak ' + c.healthFailingStreak : '') + '</td>' +
+          '<td class="ms">' + (c.uptimeMs != null ? fmtAge(c.uptimeMs) : '—') + '</td>' +
+          '<td>' + esc(String(restarts)) + '</td>' +
+          '<td>' + esc(String(exit)) + '</td></tr>';
+      }).join('');
+    }
+    if (logContainerSel.options.length !== cons.length) {
+      logContainerSel.innerHTML = cons.map(c => '<option value="' + esc(c.name) + '">' + esc(c.name) + '</option>').join('') || '<option value="">—</option>';
+    }
     checksEl.innerHTML = r.checks.map(c =>
       '<tr><td><span class="dot ' + (c.ok?'ok':'bad') + '"></span>' + esc(c.label) + '</td>' +
       '<td class="ms">' + fmtMs(c.ms) + '</td>' +
@@ -139,10 +189,35 @@ async function tick(){
       ).join('');
     }
     raw.textContent = JSON.stringify(r, null, 2);
+    tickN++;
+    if (tickN % LOG_EVERY === 1 && !document.hidden) { tickLogs(); }
   } catch (e) {
     sub.textContent = 'health service unreachable: ' + e;
   }
 }
+async function tickLogs(){
+  try {
+    const container = logContainerSel.value;
+    const tail = logTailSel.value || '200';
+    if (!container) { logsEl.textContent = 'docker not configured — no containers to show logs for.'; return; }
+    const url = '/api/logs?container=' + encodeURIComponent(container) + '&tail=' + encodeURIComponent(tail);
+    logsRaw.href = url;
+    const l = await fetch(url).then(r => r.json());
+    if (l.error) {
+      logsMeta.textContent = 'error';
+      logsEl.textContent = l.error;
+      return;
+    }
+    logsMeta.textContent = l.lines.length + ' lines · ' + new Date(l.at).toLocaleTimeString() + (l.truncated ? ' · truncated' : '');
+    logsEl.textContent = l.lines.join('\n') || '(no log output)';
+    logsEl.scrollTop = logsEl.scrollHeight;
+  } catch (e) {
+    logsMeta.textContent = 'unreachable: ' + e;
+  }
+}
+logContainerSel.addEventListener('change', tickLogs);
+logTailSel.addEventListener('change', tickLogs);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tickLogs(); });
 tick();
 setInterval(tick, REFRESH);
 </script>
