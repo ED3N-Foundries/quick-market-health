@@ -56,6 +56,7 @@ export type MarketProcess = {
   reason: string | null
   lastError: MarketLastError
   lastSignal: string | null
+  eventLoopLagMs: number | null
   memory: { rss: number | null; heapUsed: number | null; heapTotal: number | null } | null
   counters: { uncaught: number | null; unhandled: number | null; requestErrors: number | null; tickErrors: number | null } | null
 } | null
@@ -504,6 +505,7 @@ function asMarketProcess(value: unknown): { process: MarketProcess; previous: Ma
         }
       : null,
     lastSignal: typeof raw.lastSignal === "string" ? raw.lastSignal : null,
+    eventLoopLagMs: typeof raw.eventLoopLagMs === "number" ? raw.eventLoopLagMs : null,
     memory: mem && typeof mem === "object"
       ? {
           rss: typeof mem.rss === "number" ? mem.rss : null,

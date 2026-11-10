@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { clampTail, demuxDockerLogs, type ContainerSummary, type DockerSnapshot } from "./docker"
+import { clampTail, cpuCounters, cpuPctBetween, demuxDockerLogs, parseStats, calcCpuPct, type ContainerSummary, type DockerSnapshot } from "./docker"
 import { deriveLifecycle, type CheckStatus } from "./probe"
 
 function container(over: Partial<ContainerSummary> = {}): ContainerSummary {
@@ -105,5 +105,59 @@ describe("clampTail", () => {
     expect(clampTail("5", 200)).toBe(10)
     expect(clampTail("99999", 200)).toBe(2000)
     expect(clampTail("junk", 200)).toBe(200)
+  })
+})
+
+describe("container stats", () => {
+  const sample = {
+    cpu_stats: {
+      cpu_usage: { total_usage: 4_000_000_000, percpu_usage: [1, 1, 1, 1] },
+      system_cpu_usage: 40_000_000_000,
+      online_cpus: 4,
+    },
+    precpu_stats: {
+      cpu_usage: { total_usage: 3_000_000_000 },
+      system_cpu_usage: 30_000_000_000,
+    },
+    memory_stats: { usage: 192_937_984, limit: 805_306_368 },
+    pids_stats: { current: 17 },
+    networks: { eth0: { rx_bytes: 12_345, tx_bytes: 67_890 } },
+  }
+  test("cpu % from deltas times cpu count", () => {
+    // (1e9 / 10e9) * 4 * 100 = 40
+    expect(calcCpuPct(sample)).toBeCloseTo(40, 6)
+  })
+  test("null on missing or zero deltas", () => {
+    expect(calcCpuPct(null)).toBeNull()
+    expect(calcCpuPct({})).toBeNull()
+    const zeroSys = structuredClone(sample)
+    zeroSys.precpu_stats.system_cpu_usage = 40_000_000_000
+    expect(calcCpuPct(zeroSys)).toBeNull()
+  })
+  test("parseStats picks memory, pids and net totals", () => {
+    const st = parseStats(sample)
+    expect(st.memUsed).toBe(192_937_984)
+    expect(st.memLimit).toBe(805_306_368)
+    expect(st.memPct).toBeCloseTo(23.96, 1)
+    expect(st.pids).toBe(17)
+    expect(st.netRx).toBe(12_345)
+    expect(st.netTx).toBe(67_890)
+    expect(parseStats(null)).toEqual({ cpuPct: null, memUsed: null, memLimit: null, memPct: null, pids: null, netRx: null, netTx: null })
+  })
+  test("delta-based cpu works on one-shot samples with zeroed precpu", () => {
+    const oneShot = {
+      cpu_stats: { cpu_usage: { total_usage: 4_000_000_000 }, system_cpu_usage: 40_000_000_000, online_cpus: 4 },
+      precpu_stats: { cpu_usage: { total_usage: 0 } },
+    }
+    // Single-sample calc fails (precpu zeroed by the engine on one-shot).
+    expect(calcCpuPct(oneShot)).toBeNull()
+    // Two successive samples give the real percentage.
+    const prev = cpuCounters({ cpu_stats: { cpu_usage: { total_usage: 3_000_000_000 }, system_cpu_usage: 30_000_000_000, online_cpus: 4 } })
+    const cur = cpuCounters(oneShot)
+    expect(cpuPctBetween(prev, cur)).toBeCloseTo(40, 6)
+    expect(cpuPctBetween(null, cur)).toBeNull()
+    expect(cpuPctBetween(prev, null)).toBeNull()
+    // Counter reset (e.g. container restart) yields null, not garbage.
+    expect(cpuPctBetween(cur, prev)).toBeNull()
   })
 })

@@ -1,0 +1,34 @@
+import { describe, expect, test } from "bun:test"
+import { loadHealthEnv } from "./env"
+import { renderPage } from "./page"
+
+describe("renderPage", () => {
+  test("embedded script parses as valid JavaScript", () => {
+    const html = renderPage(loadHealthEnv({}))
+    const m = html.match(/<script>([\s\S]*)<\/script>/)
+    expect(m).not.toBeNull()
+    // Parses (but does not execute) the page script: a stray newline inside a
+    // JS string literal in the template would throw here, as it once did.
+    expect(() => new Function(m![1]!)).not.toThrow()
+  })
+
+  test("contains the expected card anchors", () => {
+    const html = renderPage(loadHealthEnv({}))
+    for (const id of ["pill", "sub", "lifecycle", "boot", "containers", "logs", "checks", "speeds", "bars", "tip", "raw", "copyjson"]) {
+      expect(html).toContain(`id="${id}"`)
+    }
+  })
+
+  test("layout cannot cause page-level horizontal scroll", () => {
+    const html = renderPage(loadHealthEnv({}))
+    // Belt-and-braces: body clips any stray overflow.
+    expect(html).toContain("overflow-x:hidden")
+    // Grid cards must shrink instead of forcing the page wide.
+    expect(html).toContain("grid-template-columns:minmax(0,1fr)")
+    // History bars must shrink/clip inside the card, never push it wide.
+    expect(html).toContain(".bars { display:flex; gap:2px;")
+    expect(html).toContain("overflow:hidden; max-width:100%")
+    // Long log lines wrap instead of stretching the card.
+    expect(html).toContain("white-space:pre-wrap")
+  })
+})

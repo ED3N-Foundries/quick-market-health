@@ -86,6 +86,12 @@ probe-error heuristics (`starting` while no probe has ever succeeded,
 - `/api/logs?container=<name>&tail=<n>` — timestamped docker log tail
 - `/api/health` — this service's own liveness (`{"ok":true}`)
 
+Container rows also carry one-shot engine stats — CPU % (delta between
+successive samples, like `docker stats`), memory used/limit, PIDs, and
+net rx/tx — refreshed every ~5s alongside the inspect data. The dashboard
+adds boot wall-clock times, per-piece latest/avg/p95 query speeds with bars,
+and hover/tap tooltips on the history chart.
+
 ## Env
 
 | var | default | meaning |

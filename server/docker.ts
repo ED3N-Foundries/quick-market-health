@@ -25,6 +25,14 @@ export type ContainerSummary = {
   healthFailingStreak: number | null
   /** Raw State.Status from the engine (running, exited, created, …). */
   status: string
+  /** One-shot engine stats (nulls when the socket is disabled or stats fail). */
+  cpuPct: number | null
+  memUsed: number | null
+  memLimit: number | null
+  memPct: number | null
+  pids: number | null
+  netRx: number | null
+  netTx: number | null
 }
 
 export type DockerSnapshot = {
@@ -100,6 +108,13 @@ function missingContainer(name: string): ContainerSummary {
     health: "none",
     healthFailingStreak: null,
     status: "missing",
+    cpuPct: null,
+    memUsed: null,
+    memLimit: null,
+    memPct: null,
+    pids: null,
+    netRx: null,
+    netTx: null,
   }
 }
 
@@ -130,7 +145,167 @@ function parseInspect(name: string, body: unknown, now: number): ContainerSummar
     health: rawHealth === "starting" || rawHealth === "healthy" || rawHealth === "unhealthy" ? rawHealth : "none",
     healthFailingStreak: typeof health.FailingStreak === "number" ? health.FailingStreak : null,
     status,
+    cpuPct: null,
+    memUsed: null,
+    memLimit: null,
+    memPct: null,
+    pids: null,
+    netRx: null,
+    netTx: null,
   }
+}
+
+export type ContainerStats = {
+  cpuPct: number | null
+  memUsed: number | null
+  memLimit: number | null
+  memPct: number | null
+  pids: number | null
+  netRx: number | null
+  netTx: number | null
+}
+
+const STATS_TTL_MS = 5_000
+
+let statsCache: { at: number; key: string; value: Map<string, ContainerStats> } | null = null
+
+/** Previous CPU counters per watched container (for delta-based CPU %). */
+const prevCpu = new Map<string, { total: number; sys: number; cpus: number }>()
+
+function numOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+/** CPU % from a one-shot stats sample: (cpu delta / system delta) * cpus * 100. */
+export function calcCpuPct(stat: unknown): number | null {
+  if (!stat || typeof stat !== "object") return null
+  const s = stat as Record<string, unknown>
+  const cpu = s.cpu_stats as Record<string, unknown> | undefined
+  const pre = s.precpu_stats as Record<string, unknown> | undefined
+  if (!cpu || !pre || typeof cpu !== "object" || typeof pre !== "object") return null
+  const curUse = numOrNull((cpu.cpu_usage as Record<string, unknown> | undefined)?.total_usage)
+  const preUse = numOrNull((pre.cpu_usage as Record<string, unknown> | undefined)?.total_usage)
+  const curSys = numOrNull(cpu.system_cpu_usage)
+  const preSys = numOrNull(pre.system_cpu_usage)
+  if (curUse == null || preUse == null || curSys == null || preSys == null) return null
+  const cpuDelta = curUse - preUse
+  const sysDelta = curSys - preSys
+  if (!(cpuDelta > 0) || !(sysDelta > 0)) return null
+  let cpus = numOrNull(cpu.online_cpus)
+  if (!(cpus != null && cpus > 0)) {
+    const per = (cpu.cpu_usage as Record<string, unknown> | undefined)?.percpu_usage
+    cpus = Array.isArray(per) && per.length > 0 ? per.length : 1
+  }
+  return (cpuDelta / sysDelta) * cpus * 100
+}
+
+/** Raw CPU counters from a stats sample (null when absent). */
+export function cpuCounters(stat: unknown): { total: number; sys: number; cpus: number } | null {
+  if (!stat || typeof stat !== "object") return null
+  const s = stat as Record<string, unknown>
+  const cpu = s.cpu_stats as Record<string, unknown> | undefined
+  if (!cpu || typeof cpu !== "object") return null
+  const total = numOrNull((cpu.cpu_usage as Record<string, unknown> | undefined)?.total_usage)
+  const sys = numOrNull(cpu.system_cpu_usage)
+  if (total == null || sys == null) return null
+  let cpus = numOrNull(cpu.online_cpus)
+  if (!(cpus != null && cpus > 0)) {
+    const per = (cpu.cpu_usage as Record<string, unknown> | undefined)?.percpu_usage
+    cpus = Array.isArray(per) && per.length > 0 ? per.length : 1
+  }
+  return { total, sys, cpus }
+}
+
+/** CPU % from two successive samples (the standard docker-stats approach). */
+export function cpuPctBetween(prev: { total: number; sys: number; cpus: number } | null, cur: { total: number; sys: number; cpus: number } | null): number | null {
+  if (!prev || !cur) return null
+  const cpuDelta = cur.total - prev.total
+  const sysDelta = cur.sys - prev.sys
+  if (!(cpuDelta >= 0) || !(sysDelta > 0)) return null
+  if (cpuDelta === 0) return 0
+  return (cpuDelta / sysDelta) * cur.cpus * 100
+}
+
+export function parseStats(stat: unknown): ContainerStats {
+  const blank: ContainerStats = { cpuPct: null, memUsed: null, memLimit: null, memPct: null, pids: null, netRx: null, netTx: null }
+  if (!stat || typeof stat !== "object") return blank
+  const s = stat as Record<string, unknown>
+  const mem = s.memory_stats as Record<string, unknown> | undefined
+  const memUsed = mem && typeof mem === "object" ? numOrNull(mem.usage) : null
+  const memLimit = mem && typeof mem === "object" ? numOrNull(mem.limit) : null
+  let netRx: number | null = null
+  let netTx: number | null = null
+  const networks = s.networks as Record<string, unknown> | undefined
+  if (networks && typeof networks === "object") {
+    let rx = 0
+    let tx = 0
+    let seen = false
+    for (const value of Object.values(networks)) {
+      if (!value || typeof value !== "object") continue
+      const iface = value as Record<string, unknown>
+      const r = numOrNull(iface.rx_bytes)
+      const t = numOrNull(iface.tx_bytes)
+      if (r != null) {
+        rx += r
+        seen = true
+      }
+      if (t != null) {
+        tx += t
+        seen = true
+      }
+    }
+    if (seen) {
+      netRx = rx
+      netTx = tx
+    }
+  }
+  return {
+    cpuPct: calcCpuPct(stat),
+    memUsed,
+    memLimit,
+    memPct: memUsed != null && memLimit != null && memLimit > 0 ? (memUsed / memLimit) * 100 : null,
+    pids: s.pids_stats && typeof s.pids_stats === "object" ? numOrNull((s.pids_stats as Record<string, unknown>).current) : null,
+    netRx,
+    netTx,
+  }
+}
+
+export async function fetchStatsMap(env: HealthEnv): Promise<Map<string, ContainerStats>> {
+  const now = Date.now()
+  const key = cacheKey(env)
+  if (statsCache && statsCache.key === key && now - statsCache.at < STATS_TTL_MS) return statsCache.value
+  const map = new Map<string, ContainerStats>()
+  if (env.dockerSock && existsSync(env.dockerSock)) {
+    await Promise.all(
+      env.dockerContainers.map(async (name) => {
+        try {
+          const { status, body } = await dockerGet(
+            env.dockerSock,
+            `/containers/${encodeURIComponent(name)}/stats?stream=0&one-shot=1`,
+            Math.max(env.dockerTimeoutMs, 5_000),
+          )
+          if (status < 200 || status >= 300) return
+          try {
+            const parsed: unknown = JSON.parse(body.toString("utf8"))
+            const st = parseStats(parsed)
+            // One-shot precpu_stats are zeroed, so CPU % needs the delta
+            // against the previous sample (first sample stays null).
+            const cur = cpuCounters(parsed)
+            const prev = prevCpu.get(`${key}|${name}`)
+            st.cpuPct = cpuPctBetween(prev ?? null, cur)
+            if (cur) prevCpu.set(`${key}|${name}`, cur)
+            map.set(name, st)
+          } catch {
+            // ignore malformed payloads
+          }
+        } catch {
+          // Stats must never fail the snapshot; fields stay null.
+        }
+      }),
+    )
+  }
+  statsCache = { at: now, key, value: map }
+  return map
 }
 
 export async function getDockerSnapshot(env: HealthEnv, force = false): Promise<DockerSnapshot> {
@@ -174,6 +349,15 @@ export async function getDockerSnapshot(env: HealthEnv, force = false): Promise<
           containers,
         }
       }
+    }
+    try {
+      const stats = await fetchStatsMap(env)
+      for (const c of containers) {
+        const st = stats.get(c.name)
+        if (st) Object.assign(c, st)
+      }
+    } catch {
+      // Stats overlay is best effort; inspect data stands alone.
     }
     return { available: true, sock: env.dockerSock, error: null, at: now, containers }
   }
@@ -265,5 +449,7 @@ export async function fetchContainerLogs(env: HealthEnv, container: string, tail
 /** Test hook: clear the module caches. */
 export function __resetDockerForTest(): void {
   snapshotCache = null
+  statsCache = null
+  prevCpu.clear()
   logsCache.clear()
 }
