@@ -1,19 +1,21 @@
 import { loadHealthEnv } from "./env"
 import { avgMs, pushHistory, uptimePct, type HistorySample } from "./history"
 import { renderPage } from "./page"
-import { runProbe, type HealthReport } from "./probe"
+import { emptyTracker, runProbe, type HealthReport, type TrackerState } from "./probe"
 
 const env = loadHealthEnv()
 
 let latest: HealthReport | null = null
 let history: HistorySample[] = []
+let tracking: TrackerState = emptyTracker()
 let probing = false
 
 async function probeOnce(reason: string): Promise<HealthReport> {
   if (probing && latest) return latest
   probing = true
   try {
-    const report = await runProbe(env)
+    const report = await runProbe(env, tracking)
+    tracking = report.tracking
     latest = report
     history = pushHistory(history, report, env.historyN)
     return report

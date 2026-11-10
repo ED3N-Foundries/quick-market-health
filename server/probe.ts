@@ -25,6 +25,46 @@ export type VenueHealth = {
   stale: boolean
 }
 
+export type MarketLastError = {
+  message: string | null
+  kind: string | null
+  at: number | null
+} | null
+
+export type MarketPrevious = {
+  bootId: string | null
+  bootAt: number | null
+  endedAt: number | null
+  bootCount: number | null
+  clean: boolean | null
+  reason: string | null
+  signal: string | null
+} | null
+
+export type MarketProcess = {
+  bootId: string | null
+  bootAt: number | null
+  bootCount: number | null
+  uptimeMs: number | null
+  status: string | null
+  reason: string | null
+  lastError: MarketLastError
+  lastSignal: string | null
+  memory: { rss: number | null; heapUsed: number | null; heapTotal: number | null } | null
+  counters: { uncaught: number | null; unhandled: number | null; requestErrors: number | null; tickErrors: number | null } | null
+} | null
+
+export type TrackerState = {
+  restartCount: number
+  lastRestartAt: number | null
+  lastRestartReason: string | null
+  lastBootId: string | null
+  consecutiveDown: number
+  downSince: number | null
+  lastOkAt: number | null
+  lastDownReason: string | null
+}
+
 export type HealthReport = {
   at: number
   target: string
@@ -32,6 +72,13 @@ export type HealthReport = {
   /** Wall-clock ms for the whole probe run. */
   totalMs: number
   checks: CheckResult[]
+  /** Human reason for the current down/degraded state, null when ok. */
+  downReason: string | null
+  /** Market process vitals from /api/status (null when the market is unreachable). */
+  process: MarketProcess
+  /** Previous market run info (crash reason survives restarts), null when unknown. */
+  previous: MarketPrevious
+  tracking: TrackerState
   summary: {
     chainKey: string | null
     chainName: string | null
@@ -58,6 +105,74 @@ export type HealthReport = {
 }
 
 const VENUE_STALE_MS = 5_000
+
+export function emptyTracker(): TrackerState {
+  return {
+    restartCount: 0,
+    lastRestartAt: null,
+    lastRestartReason: null,
+    lastBootId: null,
+    consecutiveDown: 0,
+    downSince: null,
+    lastOkAt: null,
+    lastDownReason: null,
+  }
+}
+
+/** First failing critical check, else first failing check, as a one-line reason. */
+export function summarizeDownReason(
+  checks: Pick<CheckResult, "id" | "ok" | "label" | "detail" | "error">[],
+  processReason: string | null,
+): string | null {
+  const failing = checks.filter((c) => !c.ok)
+  if (failing.length === 0) return processReason
+  const critical = ["config", "state", "ws"]
+  const firstCritical = failing.find((c) => critical.includes(c.id)) ?? failing[0]!
+  const bits = `${firstCritical.label}: ${firstCritical.detail}`
+  const withErr = firstCritical.error ? `${bits} [${firstCritical.error.slice(0, 160)}]` : bits
+  if (failing.length > 1) return `${withErr} (+${failing.length - 1} more)`
+  if (processReason && firstCritical.id !== "config") return `${withErr} · market says: ${processReason.slice(0, 160)}`
+  return withErr
+}
+
+/** Container-level hint: the fetch never got an HTTP response. */
+export function containerHintFor(error: string): string | null {
+  const text = error.toLowerCase()
+  if (/econnrefused|connection refused|fetch failed|socket|econnreset/.test(text)) {
+    return "connection refused — container down or restarting"
+  }
+  if (/abort|timeout|timed out/.test(text)) return "timeout — container hung or overloaded"
+  return null
+}
+
+export function updateTracker(prev: TrackerState, report: Pick<HealthReport, "at" | "status" | "downReason" | "process" | "previous">): TrackerState {
+  const next: TrackerState = { ...prev }
+  const bootId = report.process?.bootId ?? null
+  if (bootId && prev.lastBootId && bootId !== prev.lastBootId) {
+    next.restartCount = prev.restartCount + 1
+    next.lastRestartAt = report.at
+    const prevReason = report.previous?.reason ?? null
+    next.lastRestartReason = prevReason ?? `market restarted (boot ${bootId.slice(0, 8)})`
+    next.lastBootId = bootId
+  } else if (bootId && !prev.lastBootId) {
+    next.lastBootId = bootId
+  }
+  if (!bootId && prev.lastBootId && report.status === "down") {
+    // Market unreachable: boot id unknown, keep lastBootId so the next
+    // successful probe still counts as a restart.
+  }
+  if (report.status === "ok") {
+    next.consecutiveDown = 0
+    next.downSince = null
+    next.lastOkAt = report.at
+    next.lastDownReason = null
+  } else {
+    next.consecutiveDown = prev.consecutiveDown + 1
+    next.downSince = prev.downSince ?? report.at
+    next.lastDownReason = report.downReason
+  }
+  return next
+}
 
 export function classifyOverall(checks: Pick<CheckResult, "id" | "ok">[]): CheckStatus {
   const byId = new Map(checks.map((c) => [c.id, c.ok]))
@@ -299,7 +414,80 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
   }
 }
 
-export async function runProbe(env: HealthEnv): Promise<HealthReport> {
+type ProcessProbe = { process: MarketProcess; previous: MarketPrevious; reached: boolean }
+
+function asMarketProcess(value: unknown): { process: MarketProcess; previous: MarketPrevious } {
+  if (!value || typeof value !== "object") return { process: null, previous: null }
+  const body = value as Record<string, unknown>
+  const raw = (body.process ?? body) as Record<string, unknown>
+  if (!raw || typeof raw !== "object") return { process: null, previous: null }
+  const mem = raw.memory as Record<string, unknown> | undefined
+  const counters = raw.counters as Record<string, unknown> | undefined
+  const lastError = raw.lastError as Record<string, unknown> | null | undefined
+  const proc: NonNullable<MarketProcess> = {
+    bootId: typeof raw.bootId === "string" ? raw.bootId : null,
+    bootAt: typeof raw.bootAt === "number" ? raw.bootAt : null,
+    bootCount: typeof raw.bootCount === "number" ? raw.bootCount : null,
+    uptimeMs: typeof raw.uptimeMs === "number" ? raw.uptimeMs : null,
+    status: typeof raw.status === "string" ? raw.status : null,
+    reason: typeof raw.reason === "string" ? raw.reason : null,
+    lastError: lastError && typeof lastError === "object"
+      ? {
+          message: typeof lastError.message === "string" ? lastError.message : null,
+          kind: typeof lastError.kind === "string" ? lastError.kind : null,
+          at: typeof lastError.at === "number" ? lastError.at : null,
+        }
+      : null,
+    lastSignal: typeof raw.lastSignal === "string" ? raw.lastSignal : null,
+    memory: mem && typeof mem === "object"
+      ? {
+          rss: typeof mem.rss === "number" ? mem.rss : null,
+          heapUsed: typeof mem.heapUsed === "number" ? mem.heapUsed : null,
+          heapTotal: typeof mem.heapTotal === "number" ? mem.heapTotal : null,
+        }
+      : null,
+    counters: counters && typeof counters === "object"
+      ? {
+          uncaught: typeof counters.uncaught === "number" ? counters.uncaught : null,
+          unhandled: typeof counters.unhandled === "number" ? counters.unhandled : null,
+          requestErrors: typeof counters.requestErrors === "number" ? counters.requestErrors : null,
+          tickErrors: typeof counters.tickErrors === "number" ? counters.tickErrors : null,
+        }
+      : null,
+  }
+  const prevRaw = (body.previous ?? raw.previous) as Record<string, unknown> | null | undefined
+  const previous: MarketPrevious =
+    prevRaw && typeof prevRaw === "object"
+      ? {
+          bootId: typeof prevRaw.bootId === "string" ? prevRaw.bootId : null,
+          bootAt: typeof prevRaw.bootAt === "number" ? prevRaw.bootAt : null,
+          endedAt: typeof prevRaw.endedAt === "number" ? prevRaw.endedAt : null,
+          bootCount: typeof prevRaw.bootCount === "number" ? prevRaw.bootCount : null,
+          clean: typeof prevRaw.clean === "boolean" ? prevRaw.clean : null,
+          reason: typeof prevRaw.reason === "string" ? prevRaw.reason : null,
+          signal: typeof prevRaw.signal === "string" ? prevRaw.signal : null,
+        }
+      : null
+  return { process: proc.bootId || proc.reason || proc.lastError ? proc : proc, previous }
+}
+
+async function probeMarketProcess(base: string, env: HealthEnv): Promise<ProcessProbe> {
+  // Prefer the dedicated internal endpoint; fall back to /api/health on older markets.
+  for (const path of ["/api/status", "/api/health"]) {
+    try {
+      const { res, text } = await timedFetch(`${base}${path}`, {}, Math.min(env.requestTimeoutMs, 5000))
+      if (!res.ok) continue
+      const body = parseJson(text)
+      const { process, previous } = asMarketProcess(body)
+      if (process) return { process, previous, reached: true }
+    } catch {
+      // try the next path
+    }
+  }
+  return { process: null, previous: null, reached: false }
+}
+
+export async function runProbe(env: HealthEnv, prevTracking: TrackerState = emptyTracker()): Promise<HealthReport> {
   const t0 = performance.now()
   const base = env.targetUrl
   const checks: CheckResult[] = []
@@ -447,6 +635,9 @@ export async function runProbe(env: HealthEnv): Promise<HealthReport> {
   // 7. chain RPC (uses chainKey from config)
   checks.push(await probeRpc(cfg?.chainKey ?? null, env))
 
+  // 8. market process vitals (internal crash-reason endpoint; never affects status)
+  const proc = await probeMarketProcess(base, env)
+
   // Summary fields from state/feeds
   const board = (state?.board as Record<string, unknown> | undefined) ?? null
   const ticker = (state?.ticker as Record<string, unknown> | undefined) ?? null
@@ -463,12 +654,34 @@ export async function runProbe(env: HealthEnv): Promise<HealthReport> {
       }))
     : []
 
-  const report: HealthReport = {
+  const status = classifyOverall(checks)
+  const processReason = proc.process?.reason ?? null
+  let downReason = status === "ok" ? processReason : summarizeDownReason(checks, processReason)
+  // Surface a container-level hint when the market never answered.
+  if (status === "down" && (!proc.process || !proc.reached)) {
+    const firstErr = checks.find((c) => !c.ok && c.error)?.error ?? ""
+    const hint = firstErr ? containerHintFor(firstErr) : null
+    if (hint && downReason && !downReason.includes(hint)) downReason = `${downReason} · ${hint}`
+    else if (hint && !downReason) downReason = hint
+  }
+  const partial: Pick<HealthReport, "at" | "status" | "downReason" | "process" | "previous"> = {
     at: Date.now(),
+    status,
+    downReason,
+    process: proc.process,
+    previous: proc.previous,
+  }
+  const tracking = updateTracker(prevTracking, partial)
+  const report: HealthReport = {
+    at: partial.at,
     target: base,
-    status: classifyOverall(checks),
+    status,
     totalMs: performance.now() - t0,
     checks,
+    downReason,
+    process: proc.process,
+    previous: proc.previous,
+    tracking,
     summary: {
       chainKey: cfg?.chainKey ?? null,
       chainName: cfg?.chainName ?? null,

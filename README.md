@@ -10,7 +10,8 @@ client would, times every piece in ms, and shows what is working vs wrong.
 | piece | how |
 |---|---|
 | `GET /api/config` | chain, windows, fee, treasury |
-| `GET /api/health` | market process alive |
+| `GET /api/health` | market process alive (includes `status`, `reason`, `process`, `previous`) |
+| `GET /api/status` | internal crash-reason endpoint: boot id/count, uptime, last error/signal, previous unclean shutdown, memory — no DB touch |
 | `GET /api/state` | feed live/stale, ticker, board, tape points + age, clock skew |
 | `GET /api/feeds` | per-venue price, age, role, swing, gap, socket |
 | `GET /api/rounds?limit=1` | history readable |
@@ -18,7 +19,13 @@ client would, times every piece in ms, and shows what is working vs wrong.
 | chain RPC | EVM `eth_chainId` + `eth_blockNumber`, or NEAR `/status` |
 
 Overall is `ok` / `degraded` (non-critical fails, e.g. RPC) / `down`
-(a critical piece — config, state, or ws — fails).
+(a critical piece — config, state, or ws — fails). Every report also carries
+`downReason` (first failing critical check plus the market's own `reason`),
+`process` (from `/api/status`, null when unreachable), `previous` (the last
+run's crash info, which survives restarts via the market's data volume), and
+`tracking` (restarts seen, outage window, consecutive failures). The dashboard
+renders these in the “crash reasons · restarts · outage” card; `/api/history`
+samples keep `downReason` + `bootId` so sparse crashes stay visible.
 
 ## Run locally
 

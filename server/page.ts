@@ -56,6 +56,7 @@ a { color:#7db8ff; }
 <tbody id="checks"><tr><td colspan="3" class="dim">waiting for first probe…</td></tr></tbody>
 </table></section>
 <section class="card"><h2>market state</h2><div id="state" class="kv"></div></section>
+<section class="card"><h2>crash reasons · restarts · outage</h2><div id="crash" class="kv"></div><div id="downreason" class="meta" style="margin-top:8px"></div></section>
 <section class="card"><h2>price venues</h2><div id="venues" class="grid"></div></section>
 <section class="card"><h2>history</h2><div id="histmeta" class="meta"></div><div id="bars" class="bars"></div></section>
 <section class="card"><details><summary>raw report JSON</summary><pre id="raw">{}</pre></details></section>
@@ -66,6 +67,8 @@ const pill = document.getElementById('pill');
 const sub = document.getElementById('sub');
 const checksEl = document.getElementById('checks');
 const stateEl = document.getElementById('state');
+const crashEl = document.getElementById('crash');
+const downEl = document.getElementById('downreason');
 const venuesEl = document.getElementById('venues');
 const barsEl = document.getElementById('bars');
 const histmeta = document.getElementById('histmeta');
@@ -109,6 +112,22 @@ async function tick(){
       '<div class="dim">swing ' + esc(v.swing ?? '—') + ' · gap ' + esc(v.gap ?? '—') + '</div>' +
       '<div class="dim">' + esc(v.feed ?? 'no socket') + '</div></div>'
     ).join('') || '<span class="dim">no venue data</span>';
+    const p = r.process || {};
+    const prev = r.previous || {};
+    const t = r.tracking || {};
+    const memMb = (v) => (v==null||!isFinite(v)) ? '—' : (v/1048576).toFixed(1)+' MB';
+    crashEl.innerHTML =
+      kv('market status', (p.status ?? r.status ?? '—') + (p.reason ? ' · ' + p.reason : '')) +
+      kv('boot', (p.bootId ? String(p.bootId).slice(0,8) : '—') + ' · #' + (p.bootCount ?? '—') + ' · up ' + fmtAge(p.uptimeMs)) +
+      kv('last error', (p.lastError && p.lastError.message) ? ((p.lastError.kind ?? '') + ': ' + p.lastError.message) : 'none') +
+      kv('last signal', p.lastSignal ?? 'none') +
+      kv('prev run', prev.bootId ? ((prev.clean ? 'clean' : 'UNCLEAN') + ' · ' + (prev.reason ?? '')) : 'first boot / unknown') +
+      kv('restarts seen', (t.restartCount ?? 0) + (t.lastRestartAt ? ' · last ' + new Date(t.lastRestartAt).toLocaleTimeString() : '')) +
+      kv('restart reason', t.lastRestartReason ?? (prev.reason ?? '—')) +
+      kv('outage', (t.consecutiveDown ? (t.consecutiveDown + ' failing probes since ' + (t.downSince ? new Date(t.downSince).toLocaleTimeString() : '?')) : 'none') + (t.lastOkAt ? ' · last ok ' + new Date(t.lastOkAt).toLocaleTimeString() : '')) +
+      kv('memory rss/heap', memMb(p.memory && p.memory.rss) + ' / ' + memMb(p.memory && p.memory.heapUsed)) +
+      kv('counters u/r/t', ((p.counters&&p.counters.uncaught)??'—') + '/' + ((p.counters&&p.counters.unhandled)??'—') + '/' + ((p.counters&&p.counters.requestErrors)??'—') + '/' + ((p.counters&&p.counters.tickErrors)??'—') + ' (uncaught/unhandled/req/tick)');
+    downEl.textContent = r.downReason ? ('why: ' + r.downReason) : (r.status==='ok' ? 'market reports no failure reason' : '');
     if (h && h.samples) {
       const n = h.samples.length;
       const ok = h.samples.filter(x => x.status==='ok').length;
