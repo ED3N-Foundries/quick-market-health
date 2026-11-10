@@ -1,0 +1,22 @@
+name: quick-market-health
+
+services:
+  quick-market-health:
+    container_name: quick-market-health
+    build: .
+    image: ed3n/quick-market-health:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3101}:3101"
+    environment:
+      PORT: 3101
+      # When this compose runs on the same docker network as quick-market,
+      # point at the API container. For host-local quick-market use
+      # TARGET_URL=http://host.docker.internal:3001
+      TARGET_URL: ${TARGET_URL:-http://quick-market:3001}
+      WS_TARGET: ${WS_TARGET:-}
+      RPC_URL: ${RPC_URL:-}
+      CHECK_INTERVAL_MS: ${CHECK_INTERVAL_MS:-10000}
+      HISTORY_N: ${HISTORY_N:-180}
+      REFRESH_MS: ${REFRESH_MS:-5000}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-8000}
