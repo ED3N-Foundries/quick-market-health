@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { loadHealthEnv, wsFromHttp } from "./env"
+import { internalFrom, loadHealthEnv, wsFromHttp } from "./env"
 import { avgMs, pushHistory, uptimePct } from "./history"
-import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, parseHangs, parseSelfTail, parseTailMap, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
+import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, parseFunding, parseHangs, parseSelfTail, parseTailMap, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
 
 describe("wsFromHttp", () => {
   test("maps http/https to ws/wss + /ws", () => {
@@ -11,11 +11,50 @@ describe("wsFromHttp", () => {
   })
 })
 
+describe("isLiveSocketMessage", () => {
+  test("accepts the current snapshot and the older round message", () => {
+    expect(isLiveSocketMessage("snapshot")).toBe(true)
+    expect(isLiveSocketMessage("round")).toBe(true)
+    expect(isLiveSocketMessage("tick")).toBe(false)
+    expect(isLiveSocketMessage(null)).toBe(false)
+  })
+})
+
+describe("parseFunding", () => {
+  test("keeps public funding fields and drops a body that is not a chain list", () => {
+    expect(parseFunding({ ok: true })).toBeNull()
+    const parsed = parseFunding({
+      at: 5,
+      chains: [{
+        chainKey: "base-sepolia",
+        chainName: "Base Sepolia",
+        chainId: 84532,
+        treasury: "0x826020c36F4e1b6320e5E3dCade1a888E9fbDeF6",
+        token: "0xabc",
+        tokenLabel: "QM USDC",
+        native: { symbol: "ETH", have: "0", need: "0.00005", short: true },
+        tokenBalance: { symbol: "QM USDC", have: "1", need: "7", short: true },
+        explorer: "https://sepolia.basescan.org/address/0x826020c36F4e1b6320e5E3dCade1a888E9fbDeF6",
+        lines: [],
+        shortAgents: [],
+        error: null,
+        privateKey: "nope",
+      }],
+    })
+    expect(parsed?.chains[0]?.treasury).toBe("0x826020c36F4e1b6320e5E3dCade1a888E9fbDeF6")
+    expect(parsed?.chains[0]?.native.short).toBe(true)
+    expect(JSON.stringify(parsed)).not.toContain("privateKey")
+  })
+})
+
 describe("loadHealthEnv", () => {
   test("defaults and trims", () => {
     const env = loadHealthEnv({})
     expect(env.port).toBe(3101)
     expect(env.targetUrl).toBe("http://127.0.0.1:3001")
+    expect(env.internalUrl).toBe("http://127.0.0.1:3002")
+    expect(internalFrom("http://quick-market:3001")).toBe("http://quick-market:3002")
+    expect(loadHealthEnv({ INTERNAL_URL: "http://quick-market:3002/" }).internalUrl).toBe("http://quick-market:3002")
     expect(env.wsTarget).toBe("ws://127.0.0.1:3001/ws")
     expect(loadHealthEnv({ TARGET_URL: "http://quick-market:3001/" }).wsTarget).toBe("ws://quick-market:3001/ws")
     expect(loadHealthEnv({ WS_TARGET: "ws://custom/ws" }).wsTarget).toBe("ws://custom/ws")

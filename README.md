@@ -10,12 +10,13 @@ client would, times every piece in ms, and shows what is working vs wrong.
 | piece | how |
 |---|---|
 | `GET /api/config` | chain, windows, fee, treasury |
-| `GET /api/health` | market process alive (includes `status`, `reason`, `process`, `previous`) |
-| `GET /api/status` | internal crash-reason endpoint: boot id/count, uptime, last error/signal, previous unclean shutdown, memory — no DB touch |
+| `GET /api/health` | public liveness (`{"ok":true}` only) |
+| `GET /api/status` on `INTERNAL_URL` | crash-reason endpoint: boot id/count, uptime, last error/signal, previous unclean shutdown, memory — no DB touch |
+| `GET /api/funding` on `INTERNAL_URL` | public treasury address, balances, and ledger gap per live chain |
 | `GET /api/state` | feed live/stale, ticker, board, tape points + age, clock skew |
 | `GET /api/feeds` | per-venue price, age, role, swing, gap, socket |
 | `GET /api/rounds?limit=1` | history readable |
-| `WS /ws` | connect ms, first `round` msg ms, `lag` echo round-trip ms |
+| `WS /ws` | connect ms, first `snapshot` or `round` msg ms, `lag` echo round-trip ms |
 | chain RPC | EVM `eth_chainId` + `eth_blockNumber`, or NEAR `/status` |
 
 Overall is `ok` / `degraded` (non-critical fails, e.g. RPC) / `down`
@@ -97,7 +98,8 @@ and hover/tap tooltips on the history chart.
 | var | default | meaning |
 |---|---|---|
 | `PORT` | `3101` | health page port |
-| `TARGET_URL` | `http://127.0.0.1:3001` | quick-market API base |
+| `TARGET_URL` | `http://127.0.0.1:3001` | quick-market public API base |
+| `INTERNAL_URL` | port 3002 on `TARGET_URL` | process vitals and funding view; not published on the host |
 | `WS_TARGET` | derived (`TARGET_URL` http→ws + `/ws`) | websocket override |
 | `RPC_URL` | chain default | chain RPC override |
 | `CHECK_INTERVAL_MS` | `10000` | background re-probe |

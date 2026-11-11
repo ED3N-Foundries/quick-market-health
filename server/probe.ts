@@ -165,6 +165,35 @@ export type HealthReport = {
     wsRttMs: number | null
   }
   venues: VenueHealth[]
+  /** Treasury addresses and balances from the internal market port. Null when that port is down. */
+  funding: FundingSnapshot | null
+}
+
+export type FundingAsset = {
+  symbol: string
+  have: string
+  need: string
+  short: boolean
+}
+
+export type FundingChainView = {
+  chainKey: string
+  chainName: string
+  chainId: number
+  treasury: string
+  token: string
+  tokenLabel: string
+  native: FundingAsset
+  tokenBalance: FundingAsset
+  explorer: string
+  lines: string[]
+  shortAgents: { account: string; near: string; need: string; missing: boolean }[]
+  error: string | null
+}
+
+export type FundingSnapshot = {
+  at: number
+  chains: FundingChainView[]
 }
 
 const VENUE_STALE_MS = 5_000
@@ -290,6 +319,11 @@ export function updateTracker(prev: TrackerState, report: Pick<HealthReport, "at
   return next
 }
 
+/** The market opens a socket with `snapshot`. Older servers sent `round` first. */
+export function isLiveSocketMessage(type: unknown): boolean {
+  return type === "round" || type === "snapshot"
+}
+
 export function classifyOverall(checks: Pick<CheckResult, "id" | "ok">[]): CheckStatus {
   const byId = new Map(checks.map((c) => [c.id, c.ok]))
   const critical: string[] = ["config", "state", "ws"]
@@ -359,7 +393,7 @@ type Cfg = {
 const CHAIN_RPC: Record<string, string> = {
   base: "https://mainnet.base.org",
   "base-sepolia": "https://sepolia.base.org",
-  "near-testnet": "https://rpc.testnet.near.org",
+  "near-testnet": "https://rpc.testnet.fastnear.com",
 }
 
 async function probeWs(url: string, timeoutMs: number): Promise<{
@@ -393,7 +427,7 @@ async function probeWs(url: string, timeoutMs: number): Promise<{
         connectMs,
         firstMsgMs,
         rttMs: null,
-        detail: connectMs == null ? "no websocket open" : "no round message",
+        detail: connectMs == null ? "no websocket open" : "no live message",
         error: `timeout after ${timeoutMs}ms`,
       })
     }, timeoutMs)
@@ -413,7 +447,7 @@ async function probeWs(url: string, timeoutMs: number): Promise<{
       } catch {
         return
       }
-      if (firstMsgMs == null && body?.type === "round") {
+      if (firstMsgMs == null && isLiveSocketMessage(body?.type)) {
         firstMsgMs = performance.now() - t0 - (connectMs ?? 0)
         // Measure server round-trip with the lag echo endpoint.
         try {
@@ -425,7 +459,7 @@ async function probeWs(url: string, timeoutMs: number): Promise<{
             connectMs,
             firstMsgMs,
             rttMs: null,
-            detail: `open ${formatMs(connectMs)}, first round ${formatMs(firstMsgMs)}`,
+            detail: `open ${formatMs(connectMs)}, first message ${formatMs(firstMsgMs)}`,
           })
         }
         // Give the lag reply a short extra window without extending past outer timeout.
@@ -441,7 +475,7 @@ async function probeWs(url: string, timeoutMs: number): Promise<{
           connectMs,
           firstMsgMs,
           rttMs,
-          detail: `open ${formatMs(connectMs)}, first round ${formatMs(firstMsgMs)}, lag rtt ${formatMs(rttMs)}`,
+          detail: `open ${formatMs(connectMs)}, first message ${formatMs(firstMsgMs)}, lag rtt ${formatMs(rttMs)}`,
         })
       }
     })
@@ -465,7 +499,7 @@ async function probeWs(url: string, timeoutMs: number): Promise<{
           connectMs,
           firstMsgMs,
           rttMs: null,
-          detail: "socket closed before first round message",
+          detail: "socket closed before first live message",
           error: "early close",
         })
       }
@@ -697,12 +731,74 @@ function asMarketProcess(value: unknown): { process: MarketProcess; previous: Ma
   return { process: proc.bootId || proc.reason || proc.lastError ? proc : proc, previous }
 }
 
-async function probeMarketProcess(base: string, env: HealthEnv): Promise<ProcessProbe> {
+function textField(value: unknown, max: number): string {
+  return typeof value === "string" ? value.slice(0, max) : ""
+}
+
+function parseAsset(value: unknown, symbol: string): FundingAsset {
+  const obj = value && typeof value === "object" ? (value as Record<string, unknown>) : {}
+  return {
+    symbol: textField(obj.symbol, 16) || symbol,
+    have: textField(obj.have, 64) || "unavailable",
+    need: textField(obj.need, 64) || "0",
+    short: obj.short === true,
+  }
+}
+
+export function parseFunding(body: unknown): FundingSnapshot | null {
+  if (!body || typeof body !== "object") return null
+  const raw = body as { at?: unknown; chains?: unknown }
+  if (!Array.isArray(raw.chains)) return null
+  const chains: FundingChainView[] = []
+  for (const item of raw.chains.slice(0, 4)) {
+    if (!item || typeof item !== "object") continue
+    const row = item as Record<string, unknown>
+    const treasury = textField(row.treasury, 128)
+    if (!treasury) continue
+    const agents = Array.isArray(row.shortAgents)
+      ? row.shortAgents.slice(0, 20).flatMap((agent) => {
+          if (!agent || typeof agent !== "object") return []
+          const record = agent as Record<string, unknown>
+          const account = textField(record.account, 128)
+          if (!account) return []
+          return [{ account, near: textField(record.near, 64), need: textField(record.need, 64), missing: record.missing === true }]
+        })
+      : []
+    const lines = Array.isArray(row.lines) ? row.lines.slice(0, 12).flatMap((line) => (typeof line === "string" ? [line.slice(0, 240)] : [])) : []
+    chains.push({
+      chainKey: textField(row.chainKey, 32),
+      chainName: textField(row.chainName, 64),
+      chainId: typeof row.chainId === "number" ? row.chainId : 0,
+      treasury,
+      token: textField(row.token, 128),
+      tokenLabel: textField(row.tokenLabel, 32),
+      native: parseAsset(row.native, "ETH"),
+      tokenBalance: parseAsset(row.tokenBalance, "token"),
+      explorer: textField(row.explorer, 240),
+      lines,
+      shortAgents: agents,
+      error: typeof row.error === "string" ? row.error.slice(0, 240) : null,
+    })
+  }
+  return { at: typeof raw.at === "number" ? raw.at : Date.now(), chains }
+}
+
+async function probeFunding(env: HealthEnv): Promise<FundingSnapshot | null> {
+  try {
+    const { res, text } = await timedFetch(`${env.internalUrl}/api/funding`, {}, Math.min(env.requestTimeoutMs, 5000))
+    if (!res.ok) return null
+    return parseFunding(parseJson(text))
+  } catch {
+    return null
+  }
+}
+
+async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
   const empty = (): ProcessProbe => ({ process: null, previous: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
-  // Prefer the dedicated internal endpoint; fall back to /api/health on older markets.
+  // Internal port only. The public /api/health answer is liveness and has no process body.
   for (const path of ["/api/status", "/api/health"]) {
     try {
-      const { res, text } = await timedFetch(`${base}${path}`, {}, Math.min(env.requestTimeoutMs, 5000))
+      const { res, text } = await timedFetch(`${env.internalUrl}${path}`, {}, Math.min(env.requestTimeoutMs, 5000))
       if (!res.ok) continue
       const body = parseJson(text)
       const { process, previous } = asMarketProcess(body)
@@ -732,6 +828,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
   let state: Record<string, unknown> | null = null
   let feeds: Record<string, unknown> | null = null
   // Container state resolves in parallel with the HTTP probes (cached ~3s).
+  const fundingPromise = probeFunding(env)
   const dockerPromise = getDockerSnapshot(env).catch(
     (): DockerSnapshot => ({ available: false, sock: env.dockerSock || null, error: "docker snapshot threw", at: Date.now(), containers: [] }),
   )
@@ -863,21 +960,22 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
     wsRttMs = ws.rttMs
     checks.push({
       id: "ws",
-      label: "WS /ws first round",
+      label: "WS /ws first message",
       ok: ws.ok,
       ms: ws.connectMs != null && ws.firstMsgMs != null ? ws.connectMs + ws.firstMsgMs : (ws.connectMs ?? null),
       detail: ws.detail,
       ...(ws.error ? { error: ws.error } : {}),
     })
   } catch (error) {
-    checks.push({ id: "ws", label: "WS /ws first round", ok: false, ms: null, detail: "probe threw", error: String(error).slice(0, 300) })
+    checks.push({ id: "ws", label: "WS /ws first message", ok: false, ms: null, detail: "probe threw", error: String(error).slice(0, 300) })
   }
 
   // 7. chain RPC (uses chainKey from config)
   checks.push(await probeRpc(cfg?.chainKey ?? null, env))
 
   // 8. market process vitals (internal crash-reason endpoint; never affects status)
-  const proc = await probeMarketProcess(base, env)
+  const proc = await probeMarketProcess(env)
+  const funding = await fundingPromise
 
   // Summary fields from state/feeds
   const board = (state?.board as Record<string, unknown> | undefined) ?? null
@@ -963,6 +1061,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
       wsRttMs,
     },
     venues,
+    funding,
   }
   return report
 }

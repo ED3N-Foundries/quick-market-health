@@ -71,6 +71,11 @@ details summary { cursor:pointer; color:var(--dim); }
 .kv div { min-width:0; }
 .kv div span { overflow-wrap:anywhere; }
 .kv div b { display:block; font-size:11px; color:var(--dim); font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
+.fund { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:0 0 10px; }
+.fund h3 { margin:0 0 8px; font-size:14px; }
+.fund .addr { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+.fund button { background:#0a0d11; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:2px 8px; font-size:12px; cursor:pointer; }
+.fund .short { color:var(--warn); font-weight:700; }
 a { color:#7db8ff; }
 select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-size:12px; }
 .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
@@ -83,6 +88,7 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 <span id="sub" class="meta">connecting…</span>
 </header>
 <main>
+<section class="card"><h2>where to fund</h2><div id="funding">waiting for first probe…</div></section>
 <section class="card"><h2>lifecycle</h2><div id="lifecycle" class="lifecycle">waiting for first probe…</div></section>
 <section class="card"><h2>hangs</h2><div id="hangmeta" class="big">waiting for first probe…</div><div id="diskline" class="meta" style="margin:4px 0 8px"></div><div class="tblwrap"><table>
 <thead><tr><th>when</th><th>duration</th><th>kind</th><th>name</th><th>detail</th></tr></thead>
@@ -103,7 +109,7 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 <select id="logcontainer"></select>
 <select id="logtail"><option value="100">last 100</option><option value="200" selected>last 200</option><option value="500">last 500</option><option value="1000">last 1000</option></select>
 <span id="logsmeta" class="meta"></span>
-<a id="logsraw" class="meta" href="/api/logs" target="_blank" rel="noopener">raw json</a>
+<a id="logsraw" class="meta" href="api/logs" target="_blank" rel="noopener">raw json</a>
 </div>
 <pre id="logs">waiting for first probe…</pre>
 </section>
@@ -130,6 +136,7 @@ const containersEl = document.getElementById('containers');
 const checksEl = document.getElementById('checks');
 const speedsEl = document.getElementById('speeds');
 const stateEl = document.getElementById('state');
+const fundingEl = document.getElementById('funding');
 const crashEl = document.getElementById('crash');
 const downEl = document.getElementById('downreason');
 const venuesEl = document.getElementById('venues');
@@ -159,9 +166,10 @@ function esc(s){ return String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':
 async function tick(){
   try {
     const [r, h] = await Promise.all([
-      fetch('/api/check?fresh=1').then(r => r.json()),
-      fetch('/api/history').then(r => r.json()).catch(() => null),
+      fetch('api/check?fresh=1').then(r => r.json()),
+      fetch('api/history').then(r => r.json()).catch(() => null),
     ]);
+    renderFunding(r);
     pill.textContent = r.lifecycle || r.status;
     pill.className = 'pill ' + pillClass(r.lifecycle || r.status);
     const when = new Date(r.at).toLocaleTimeString();
@@ -258,7 +266,7 @@ async function tickLogs(){
     const container = logContainerSel.value;
     const tail = logTailSel.value || '200';
     if (!container) { logsEl.textContent = 'docker not configured — no containers to show logs for.'; return; }
-    const url = '/api/logs?container=' + encodeURIComponent(container) + '&tail=' + encodeURIComponent(tail);
+    const url = 'api/logs?container=' + encodeURIComponent(container) + '&tail=' + encodeURIComponent(tail);
     logsRaw.href = url;
     const l = await fetch(url).then(r => r.json());
     if (l.error) {
@@ -293,6 +301,47 @@ function tipHtml(x){
     (x.bootId ? '<br>boot ' + esc(String(x.bootId).slice(0, 8)) : '') +
     (x.hangCount != null ? '<br>hangs/hr: ' + x.hangCount : '');
 }
+function fundRow(label, value){
+  return '<div><b>' + esc(label) + '</b><span>' + value + '</span></div>';
+}
+function renderFunding(r){
+  const f = r.funding;
+  if (!f || !Array.isArray(f.chains)) {
+    fundingEl.textContent = 'funding view unreachable';
+    return;
+  }
+  if (!f.chains.length) {
+    fundingEl.textContent = 'no live chain';
+    return;
+  }
+  fundingEl.innerHTML = f.chains.map(c => {
+    const notes = [];
+    if (c.native && c.native.short) notes.push(c.native.symbol === 'ETH' ? 'needs gas' : ('needs ' + (c.native.symbol || 'native')));
+    if (c.tokenBalance && c.tokenBalance.short) notes.push('short of owed');
+    const agents = (c.shortAgents || []).map(a => esc(a.account) + (a.missing ? ' missing' : ' ' + esc(a.near))).join('<br>');
+    const lines = (c.lines || []).map(line => esc(line)).join('<br>');
+    return '<div class="fund">' +
+      '<h3>' + esc(c.chainName || c.chainKey || 'chain') + (c.chainId ? ' (' + esc(c.chainId) + ')' : '') +
+      (notes.length ? ' <span class="short">' + esc(notes.join(' · ')) + '</span>' : '') + '</h3>' +
+      '<div class="kv">' +
+      fundRow('send to', '<span class="addr">' + esc(c.treasury) + '</span> <button type="button" data-copy="' + esc(c.treasury) + '">copy</button>') +
+      fundRow('token', esc((c.tokenLabel || 'token') + ' ' + (c.token || ''))) +
+      fundRow(c.native ? c.native.symbol : 'native', esc((c.native && c.native.have) || '—') + ' / need ' + esc((c.native && c.native.need) || '—')) +
+      fundRow(c.tokenBalance ? c.tokenBalance.symbol : 'token', esc((c.tokenBalance && c.tokenBalance.have) || '—') + ' / owed ' + esc((c.tokenBalance && c.tokenBalance.need) || '—')) +
+      (c.explorer ? fundRow('explorer', '<a href="' + esc(c.explorer) + '" target="_blank" rel="noopener">' + esc(c.explorer) + '</a>') : '') +
+      '</div>' +
+      (lines ? '<div class="meta" style="margin-top:8px">' + lines + '</div>' : '') +
+      (agents ? '<div class="meta" style="margin-top:8px">short agents<br>' + agents + '</div>' : '') +
+      (c.error ? '<div class="err">' + esc(c.error) + '</div>' : '') +
+      '</div>';
+  }).join('');
+}
+fundingEl.addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest('button[data-copy]') : null;
+  if (!btn || !navigator.clipboard) return;
+  const value = btn.getAttribute('data-copy') || '';
+  navigator.clipboard.writeText(value).then(() => { btn.textContent = 'copied'; });
+});
 function renderHangs(r){
   const hz = r.hangs || { recent: [], count: null, maxMs: null, lastTs: null };
   const st = r.selfTail || null;

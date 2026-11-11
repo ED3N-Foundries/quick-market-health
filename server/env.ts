@@ -1,6 +1,8 @@
 export type HealthEnv = {
   port: number
   targetUrl: string
+  /** Market admin port. Process vitals and the funding view. Not published. */
+  internalUrl: string
   wsTarget: string
   rpcUrl: string
   checkIntervalMs: number
@@ -26,6 +28,11 @@ function str(value: string | undefined, fallback: string): string {
   return t ? t : fallback
 }
 
+export function internalFrom(target: string): string {
+  if (/:\d+$/.test(target)) return target.replace(/:\d+$/, ":3002")
+  return `${target}:3002`
+}
+
 export function wsFromHttp(base: string): string {
   const clean = base.replace(/\/+$/, "")
   if (clean.startsWith("https://")) return `wss://${clean.slice("https://".length)}/ws`
@@ -47,6 +54,7 @@ export function loadHealthEnv(env: Record<string, string | undefined> = process.
   return {
     port: num(env.PORT, 3101),
     targetUrl,
+    internalUrl: (str(env.INTERNAL_URL, "") || internalFrom(targetUrl)).replace(/\/+$/, ""),
     wsTarget: str(env.WS_TARGET, "") || wsFromHttp(targetUrl),
     rpcUrl: str(env.RPC_URL, ""),
     checkIntervalMs: num(env.CHECK_INTERVAL_MS, 10_000),
