@@ -9,6 +9,8 @@ export type HealthEnv = {
   historyN: number
   refreshMs: number
   requestTimeoutMs: number
+  /** Agent stats origin. Empty skips the probe. Not published on the host. */
+  agentUrl: string
   /** Unix socket path for the Docker Engine API. Empty = docker status/logs disabled. */
   dockerSock: string
   /** Container names watched for lifecycle state + log tails. First entry is the primary (the market). */
@@ -40,6 +42,11 @@ export function wsFromHttp(base: string): string {
   return `${clean}/ws`
 }
 
+function agentUrlFrom(value: string | undefined): string {
+  if (value == null) return "http://127.0.0.1:3011"
+  return value.trim().replace(/\/+$/, "")
+}
+
 function list(value: string | undefined, fallback: string[]): string[] {
   if (value == null || value.trim() === "") return fallback
   const items = value
@@ -61,6 +68,7 @@ export function loadHealthEnv(env: Record<string, string | undefined> = process.
     historyN: Math.min(Math.max(Math.floor(num(env.HISTORY_N, 180)), 10), 1000),
     refreshMs: num(env.REFRESH_MS, 5_000),
     requestTimeoutMs: num(env.REQUEST_TIMEOUT_MS, 8_000),
+    agentUrl: agentUrlFrom(env.AGENT_URL),
     dockerSock: str(env.DOCKER_SOCK, ""),
     dockerContainers: list(env.DOCKER_CONTAINERS, ["quick-market", "quick-market-agent"]),
     dockerTimeoutMs: num(env.DOCKER_TIMEOUT_MS, 2_500),

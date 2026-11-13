@@ -1,3 +1,4 @@
+import { parseAgentStats, type AgentStats } from "./agents"
 import type { HealthEnv } from "./env"
 import { getDockerSnapshot, type ContainerSummary, type DockerSnapshot } from "./docker"
 
@@ -167,6 +168,8 @@ export type HealthReport = {
   venues: VenueHealth[]
   /** Treasury addresses and balances from the internal market port. Null when that port is down. */
   funding: FundingSnapshot | null
+  /** Swarm snapshot from the agent listener. Null when AGENT_URL is empty. Never affects status. */
+  agents: AgentStats | null
 }
 
 export type FundingAsset = {
@@ -783,6 +786,19 @@ export function parseFunding(body: unknown): FundingSnapshot | null {
   return { at: typeof raw.at === "number" ? raw.at : Date.now(), chains }
 }
 
+export async function probeAgent(env: HealthEnv, now = Date.now()): Promise<AgentStats | null> {
+  if (!env.agentUrl) return null
+  try {
+    const { res, text } = await timedFetch(`${env.agentUrl}/api/health`, {}, Math.min(env.requestTimeoutMs, 5_000))
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    const parsed = parseAgentStats(parseJson(text), now)
+    if (!parsed) return { ok: false, error: "unreadable agent stats" }
+    return parsed
+  } catch (error) {
+    return { ok: false, error: String(error).slice(0, 300) }
+  }
+}
+
 async function probeFunding(env: HealthEnv): Promise<FundingSnapshot | null> {
   try {
     const { res, text } = await timedFetch(`${env.internalUrl}/api/funding`, {}, Math.min(env.requestTimeoutMs, 5000))
@@ -829,6 +845,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
   let feeds: Record<string, unknown> | null = null
   // Container state resolves in parallel with the HTTP probes (cached ~3s).
   const fundingPromise = probeFunding(env)
+  const agentPromise = probeAgent(env)
   const dockerPromise = getDockerSnapshot(env).catch(
     (): DockerSnapshot => ({ available: false, sock: env.dockerSock || null, error: "docker snapshot threw", at: Date.now(), containers: [] }),
   )
@@ -976,6 +993,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
   // 8. market process vitals (internal crash-reason endpoint; never affects status)
   const proc = await probeMarketProcess(env)
   const funding = await fundingPromise
+  const agents = await agentPromise
 
   // Summary fields from state/feeds
   const board = (state?.board as Record<string, unknown> | undefined) ?? null
@@ -1062,6 +1080,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
     },
     venues,
     funding,
+    agents,
   }
   return report
 }

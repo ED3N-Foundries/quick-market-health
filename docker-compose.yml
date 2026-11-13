@@ -14,6 +14,7 @@ services:
       # point at the API container. For host-local quick-market use
       # TARGET_URL=http://host.docker.internal:3001
       TARGET_URL: ${TARGET_URL:-http://quick-market:3001}
+      AGENT_URL: ${AGENT_URL:-http://quick-market-agent:3011}
       WS_TARGET: ${WS_TARGET:-}
       RPC_URL: ${RPC_URL:-}
       CHECK_INTERVAL_MS: ${CHECK_INTERVAL_MS:-10000}

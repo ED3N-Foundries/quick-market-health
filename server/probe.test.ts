@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { internalFrom, loadHealthEnv, wsFromHttp } from "./env"
-import { avgMs, pushHistory, uptimePct } from "./history"
-import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, parseFunding, parseHangs, parseSelfTail, parseTailMap, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
+import { agentAvg, avgMs, pushHistory, uptimePct, withAgentAverages } from "./history"
+import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, parseFunding, parseHangs, parseSelfTail, parseTailMap, probeAgent, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
+import { parseAgentStats } from "./agents"
 
 describe("wsFromHttp", () => {
   test("maps http/https to ws/wss + /ws", () => {
@@ -56,6 +57,9 @@ describe("loadHealthEnv", () => {
     expect(internalFrom("http://quick-market:3001")).toBe("http://quick-market:3002")
     expect(loadHealthEnv({ INTERNAL_URL: "http://quick-market:3002/" }).internalUrl).toBe("http://quick-market:3002")
     expect(env.wsTarget).toBe("ws://127.0.0.1:3001/ws")
+    expect(env.agentUrl).toBe("http://127.0.0.1:3011")
+    expect(loadHealthEnv({ AGENT_URL: "" }).agentUrl).toBe("")
+    expect(loadHealthEnv({ AGENT_URL: "http://quick-market-agent:3011/" }).agentUrl).toBe("http://quick-market-agent:3011")
     expect(loadHealthEnv({ TARGET_URL: "http://quick-market:3001/" }).wsTarget).toBe("ws://quick-market:3001/ws")
     expect(loadHealthEnv({ WS_TARGET: "ws://custom/ws" }).wsTarget).toBe("ws://custom/ws")
   })
@@ -212,5 +216,105 @@ describe("tracking", () => {
     expect(t.restartCount).toBe(1)
     expect(t.lastRestartReason).toContain("unclean")
     expect(t.consecutiveDown).toBe(0)
+  })
+})
+
+function liveAgent(extra: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    running: true,
+    at: 10_000,
+    manila: "21:00:00",
+    phase: "peak",
+    hour: 21,
+    window: [3000, 6000],
+    online: 40,
+    enrolled: 50,
+    pid: 7,
+    spring: 38,
+    target: 40,
+    arrivedMinute: 3,
+    leftMinute: 1,
+    trace: [10, 30],
+    book: { roundId: 4, upMicros: 5, downMicros: 6, botUpMicros: 1, botDownMicros: 2, buyIns: 4, skips: 12, p50: 100, p90: 400 },
+    money: { seedMicros: 9, mintMicros: 8, burnMicros: 2, stakeMicros: 3, histogram: [{ band: "$3–10", count: 2 }] },
+    lastError: null,
+    bookLagMs: 25,
+    buyInPaused: false,
+    bleed: true,
+    mode: "clock",
+    pin: null,
+    apiHost: "quick-market:3001",
+    apiIp: "172.19.0.4",
+    privateKey: "secret-key",
+    address: "0xdeadbeef",
+    ...extra,
+  }
+}
+
+describe("agent stats", () => {
+  test("keeps public fields and drops secrets", () => {
+    const parsed = parseAgentStats(liveAgent(), 12_000)
+    expect(parsed?.ok).toBe(true)
+    if (!parsed || parsed.at == null) throw new Error("expected a live snapshot")
+    expect(parsed.online).toBe(40)
+    expect(parsed.phase).toBe("peak")
+    expect(parsed.book.p50).toBe(100)
+    expect(parsed.book.p90).toBe(400)
+    expect(parsed.onlineAvg).toBe(20)
+    expect(parsed.skipRate).toBeCloseTo(12 / 16)
+    expect(parsed.ageMs).toBe(2_000)
+    expect(parsed.stale).toBe(false)
+    const encoded = JSON.stringify(parsed)
+    expect(encoded).not.toContain("secret-key")
+    expect(encoded).not.toContain("0xdeadbeef")
+    expect(encoded).not.toContain("privateKey")
+  })
+
+  test("a running snapshot older than 15s is stale, a quiet one is not", () => {
+    const stuck = parseAgentStats(liveAgent(), 40_000)
+    if (!stuck || stuck.at == null) throw new Error("expected a live snapshot")
+    expect(stuck.stale).toBe(true)
+    expect(stuck.ageMs).toBe(30_000)
+    const quiet = parseAgentStats(liveAgent({ running: false }), 40_000)
+    if (!quiet || quiet.at == null) throw new Error("expected a quiet snapshot")
+    expect(quiet.running).toBe(false)
+    expect(quiet.stale).toBe(false)
+  })
+
+  test("a booting body is distinct from garbage", () => {
+    expect(parseAgentStats({ ok: true, running: false, at: null })).toEqual({ ok: true, running: false, at: null, ageMs: null, stale: false })
+    expect(parseAgentStats({ ok: true })).toBeNull()
+    expect(parseAgentStats({ ok: false, online: 1 })).toBeNull()
+    expect(parseAgentStats({ ok: true, at: 1 })).toBeNull()
+  })
+
+  test("a dead agent does not change the market verdict", async () => {
+    const env = loadHealthEnv({ AGENT_URL: "http://127.0.0.1:1", REQUEST_TIMEOUT_MS: "300" })
+    const agents = await probeAgent(env)
+    expect(agents?.ok).toBe(false)
+    if (!agents || agents.ok) throw new Error("expected a failure")
+    expect(agents.error.length).toBeGreaterThan(0)
+    expect(classifyOverall([{ id: "config", ok: true }, { id: "state", ok: true }, { id: "ws", ok: true }])).toBe("ok")
+    expect(await probeAgent(loadHealthEnv({ AGENT_URL: "" }))).toBeNull()
+  })
+
+  test("history averages ignore missed probes", () => {
+    const live = parseAgentStats(liveAgent(), 10_000)
+    const later = parseAgentStats(liveAgent({ online: 60, bookLagMs: 75, book: { ...liveAgent().book, p50: 300, p90: 500 } }), 11_000)
+    const list = pushHistory([], { at: 1, status: "ok", totalMs: 10, checks: [], agents: live } as never, 10)
+    const withMiss = pushHistory(list, { at: 2, status: "ok", totalMs: 10, checks: [], agents: { ok: false, error: "down" } } as never, 10)
+    const both = pushHistory(withMiss, { at: 3, status: "ok", totalMs: 10, checks: [], agents: later } as never, 10)
+    expect(both[1]?.agent).toBeNull()
+    const avg = agentAvg(both)
+    expect(avg.online).toBe(50)
+    expect(avg.bookLagMs).toBe(50)
+    expect(avg.p50).toBe(200)
+    expect(avg.p90).toBe(450)
+    const report = withAgentAverages({ agents: later } as never, both)
+    if (!report.agents || report.agents.ok !== true || report.agents.at == null) throw new Error("expected averages on a live snapshot")
+    expect(report.agents.averages).toEqual(avg)
+    const missed = withAgentAverages({ agents: { ok: false, error: "down" } } as never, both)
+    expect(missed.agents).toEqual({ ok: false, error: "down" })
   })
 })

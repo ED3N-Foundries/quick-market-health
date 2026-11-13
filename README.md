@@ -16,11 +16,16 @@ client would, times every piece in ms, and shows what is working vs wrong.
 | `GET /api/state` | feed live/stale, ticker, board, tape points + age, clock skew |
 | `GET /api/feeds` | per-venue price, age, role, swing, gap, socket |
 | `GET /api/rounds?limit=1` | history readable |
+| agent stats on `AGENT_URL` | swarm status, stake p50/p90, money, recent averages. A miss does not change the verdict |
 | `WS /ws` | connect ms, first `snapshot` or `round` msg ms, `lag` echo round-trip ms |
 | chain RPC | EVM `eth_chainId` + `eth_blockNumber`, or NEAR `/status` |
 
 Overall is `ok` / `degraded` (non-critical fails, e.g. RPC) / `down`
-(a critical piece — config, state, or ws — fails). Every report also carries
+(a critical piece — config, state, or ws — fails). Agent stats ride along
+on `/api/check` as `agents` and do not move that verdict. A running snapshot
+older than 15 seconds is marked stale. `/api/history` adds `agentAvg`
+(online, book lag, stake p50, stake p90) over the same ring as `avgMs`.
+Every report also carries
 `downReason` (first failing critical check plus the market's own `reason`),
 `process` (from `/api/status`, null when unreachable), `previous` (the last
 run's crash info, which survives restarts via the market's data volume), and
@@ -100,6 +105,7 @@ and hover/tap tooltips on the history chart.
 | `PORT` | `3101` | health page port |
 | `TARGET_URL` | `http://127.0.0.1:3001` | quick-market public API base |
 | `INTERNAL_URL` | port 3002 on `TARGET_URL` | process vitals and funding view; not published on the host |
+| `AGENT_URL` | `http://127.0.0.1:3011` | agent `GET /api/health`. Empty skips the probe. Not published on the host |
 | `WS_TARGET` | derived (`TARGET_URL` http→ws + `/ws`) | websocket override |
 | `RPC_URL` | chain default | chain RPC override |
 | `CHECK_INTERVAL_MS` | `10000` | background re-probe |

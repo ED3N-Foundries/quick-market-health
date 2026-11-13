@@ -96,6 +96,7 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 </table></div></section>
 <section class="card"><h2>crash reasons · restarts · outage</h2><div id="crash" class="kv"></div><div id="downreason" class="meta" style="margin-top:8px"></div></section>
 <section class="card"><h2>market state</h2><div id="state" class="kv"></div></section>
+<section class="card"><h2>agents</h2><div id="agents" class="kv">waiting for first probe…</div></section>
 <section class="card"><h2>pieces · ping · ms</h2><div class="tblwrap"><table>
 <thead><tr><th>piece</th><th>ms</th><th>state</th></tr></thead>
 <tbody id="checks"><tr><td colspan="3" class="dim">waiting for first probe…</td></tr></tbody>
@@ -136,6 +137,7 @@ const containersEl = document.getElementById('containers');
 const checksEl = document.getElementById('checks');
 const speedsEl = document.getElementById('speeds');
 const stateEl = document.getElementById('state');
+const agentsEl = document.getElementById('agents');
 const fundingEl = document.getElementById('funding');
 const crashEl = document.getElementById('crash');
 const downEl = document.getElementById('downreason');
@@ -163,6 +165,38 @@ function fmtBytesMB(v){ if(v==null||!isFinite(v)) return '—'; return v.toLocal
 function tailClass(ms){ if(ms==null||!isFinite(ms)) return ''; if(ms>=1000) return 'bad'; if(ms>=250) return 'warn'; return ''; }
 function tailCell(ms){ const c = tailClass(ms); return '<span class="ms"' + (c ? ' style="color:var(--' + (c==='bad'?'bad':'warn') + ');font-weight:700"' : '') + '>' + fmtMs(ms) + '</span>'; }
 function esc(s){ return String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmtCount(v){ if(v==null||!isFinite(v)) return '—'; return Math.round(v).toLocaleString('en-US'); }
+function renderAgents(r){
+  const kv = (k,v) => '<div><b>'+k+'</b><span>'+v+'</span></div>';
+  const a = r.agents;
+  if (!a) { agentsEl.innerHTML = '<span class="dim">agent stats not configured</span>'; return; }
+  if (a.ok === false) { agentsEl.innerHTML = '<div class="err">' + esc(a.error || 'agent unreachable') + '</div>'; return; }
+  if (a.at == null) { agentsEl.innerHTML = '<span class="dim">runner is up, no snapshot yet</span>'; return; }
+  const book = a.book || {};
+  const money = a.money || {};
+  const avg = a.averages || {};
+  const net = (money.mintMicros || 0) - (money.burnMicros || 0);
+  const span = Array.isArray(a.window) ? fmtCount(a.window[0]) + '–' + fmtCount(a.window[1]) : '—';
+  const skip = a.skipRate == null ? '' : ' · skip ' + (100 * a.skipRate).toFixed(1) + '%';
+  agentsEl.innerHTML =
+    (a.stale ? '<div class="err" style="margin-bottom:8px">snapshot is stale — the listener is up and the tick looks stuck</div>' : '') +
+    kv('status', esc((a.running ? 'running' : 'quiet') + ' · ' + (a.phase || '—') + (a.stale ? ' · stale' : ''))) +
+    kv('mode', esc((a.mode || '—') + (a.pin != null ? ' · pin ' + a.pin : '') + (a.buyInPaused ? ' · buy-ins paused' : '') + (a.bleed === false ? ' · bleed off' : ''))) +
+    kv('manila', esc(a.manila || '—')) +
+    kv('online', esc(fmtCount(a.online) + ' · enrolled ' + fmtCount(a.enrolled) + ' · window ' + span)) +
+    kv('spring / target', esc(fmtCount(a.spring) + ' / ' + fmtCount(a.target))) +
+    kv('this minute', esc('+' + (a.arrivedMinute ?? 0) + ' −' + (a.leftMinute ?? 0))) +
+    kv('buy-ins / skips', esc((book.buyIns ?? '—') + ' / ' + (book.skips ?? '—') + skip)) +
+    kv('stake p50 / p90', esc(fmtMoney(book.p50) + ' / ' + fmtMoney(book.p90))) +
+    kv('online avg', esc(a.onlineAvg == null ? '—' : a.onlineAvg.toFixed(1))) +
+    kv('recent avg online', esc(avg.online == null ? '—' : avg.online.toFixed(1))) +
+    kv('book lag', esc(fmtMs(a.bookLagMs) + (avg.bookLagMs != null ? ' · avg ' + fmtMs(avg.bookLagMs) : ''))) +
+    kv('recent avg p50 / p90', esc(fmtMoney(avg.p50) + ' / ' + fmtMoney(avg.p90))) +
+    kv('money', esc('seed ' + fmtMoney(money.seedMicros) + ' · mints ' + fmtMoney(money.mintMicros) + ' · burns ' + fmtMoney(money.burnMicros))) +
+    kv('net / staked', esc(fmtMoney(net) + ' / ' + fmtMoney(money.stakeMicros))) +
+    kv('snapshot age', esc(fmtAge(a.ageMs))) +
+    (a.lastError ? '<div class="err" style="grid-column:1/-1">' + esc(a.lastError) + '</div>' : '');
+}
 async function tick(){
   try {
     const [r, h] = await Promise.all([
@@ -170,6 +204,7 @@ async function tick(){
       fetch('api/history').then(r => r.json()).catch(() => null),
     ]);
     renderFunding(r);
+    renderAgents(r);
     pill.textContent = r.lifecycle || r.status;
     pill.className = 'pill ' + pillClass(r.lifecycle || r.status);
     const when = new Date(r.at).toLocaleTimeString();

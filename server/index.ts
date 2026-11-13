@@ -1,5 +1,5 @@
 import { loadHealthEnv } from "./env"
-import { avgMs, pushHistory, uptimePct, type HistorySample } from "./history"
+import { agentAvg, avgMs, pushHistory, uptimePct, withAgentAverages, type HistorySample } from "./history"
 import { renderPage } from "./page"
 import { emptyTracker, runProbe, type HealthReport, type TrackerState } from "./probe"
 import { clampTail, fetchContainerLogs, getDockerSnapshot } from "./docker"
@@ -54,7 +54,7 @@ const server = Bun.serve({
     if (req.method === "GET" && url.pathname === "/api/check") {
       try {
         const report = url.searchParams.get("fresh") === "0" && latest ? latest : await probeOnce("ondemand")
-        return json(report)
+        return json(withAgentAverages(report, history))
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : String(error) }, 502)
       }
@@ -65,6 +65,7 @@ const server = Bun.serve({
         samples: history,
         uptimePct: uptimePct(history),
         avgMs: Object.fromEntries(["config", "health", "state", "feeds", "rounds", "ws", "rpc"].map((id) => [id, avgMs(history, id)])),
+        agentAvg: agentAvg(history),
       })
     }
     if (req.method === "GET" && url.pathname === "/api/containers") {
