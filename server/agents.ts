@@ -16,6 +16,9 @@ export type AgentBook = {
   botDownMicros: number
   buyIns: number
   skips: number
+  attempted: number
+  rejected: number
+  lastReject: string | null
   p50: number
   p90: number
 }
@@ -48,6 +51,7 @@ export type AgentLive = {
   window: [number, number]
   online: number
   enrolled: number | null
+  bound: number | null
   pid: number | null
   spring: number
   target: number
@@ -103,6 +107,7 @@ export function parseAgentStats(body: unknown, now = Date.now()): AgentBoot | Ag
     window: parseWindow(row.window),
     online: num(row.online),
     enrolled: numOrNull(row.enrolled),
+    bound: numOrNull(row.bound),
     pid: numOrNull(row.pid),
     spring: num(row.spring),
     target: num(row.target),
@@ -135,6 +140,9 @@ function parseBook(value: unknown): AgentBook | null {
     botDownMicros: num(row.botDownMicros),
     buyIns: num(row.buyIns),
     skips: num(row.skips),
+    attempted: num(row.attempted),
+    rejected: num(row.rejected),
+    lastReject: text(row.lastReject, 300),
     p50: num(row.p50),
     p90: num(row.p90),
   }

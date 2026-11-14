@@ -294,10 +294,11 @@ function renderAgents(r){
     kv('status', esc((a.running ? 'running' : 'quiet') + ' · ' + (a.phase || '—') + (a.stale ? ' · stale' : ''))) +
     kv('mode', esc((a.mode || '—') + (a.pin != null ? ' · pin ' + a.pin : '') + (a.buyInPaused ? ' · buy-ins paused' : '') + (a.bleed === false ? ' · bleed off' : ''))) +
     kv('manila', esc(a.manila || '—')) +
-    kv('online', esc(fmtCount(a.online) + ' · enrolled ' + fmtCount(a.enrolled) + ' · window ' + span)) +
+    kv('online', esc(fmtCount(a.online) + ' · enrolled ' + fmtCount(a.enrolled) + ' · bound ' + (a.bound == null ? '—' : fmtCount(a.bound)) + ' · window ' + span)) +
     kv('spring / target', esc(fmtCount(a.spring) + ' / ' + fmtCount(a.target))) +
     kv('this minute', esc('+' + (a.arrivedMinute ?? 0) + ' −' + (a.leftMinute ?? 0))) +
     kv('buy-ins / skips', esc((book.buyIns ?? '—') + ' / ' + (book.skips ?? '—') + skip)) +
+    kv('orders tried / rejected', esc((book.attempted ?? '—') + ' / ' + (book.rejected ?? '—') + (book.lastReject ? ' · ' + book.lastReject : ''))) +
     kv('stake p50 / p90', esc(fmtMoney(book.p50) + ' / ' + fmtMoney(book.p90))) +
     kv('online avg', esc(a.onlineAvg == null ? '—' : a.onlineAvg.toFixed(1))) +
     kv('recent avg online', esc(avg.online == null ? '—' : avg.online.toFixed(1))) +
