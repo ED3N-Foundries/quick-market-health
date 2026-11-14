@@ -221,7 +221,7 @@ function renderNearRpc(r){
   }
   rpcMetaEl.textContent = prefix + (rows ? rows.length + ' configured · from the market process, not the external RPC probe above' : 'no endpoint telemetry');
   if (!rows || !rows.length) {
-    nearRpcEl.innerHTML = '<tr><td colspan="6" class="dim">no NEAR RPC endpoints on the active chain</td></tr>';
+    nearRpcEl.innerHTML = '<tr><td colspan="6" class="dim">no NEAR RPC endpoints (NEAR runtime off)</td></tr>';
     return;
   }
   nearRpcEl.innerHTML = rows.map(x => {
@@ -284,6 +284,7 @@ async function tick(){
     renderHangs(r);
     stateEl.innerHTML =
       kv('chain', (s.chainKey??'—') + ' / ' + (s.chainName??'')) +
+      kv('live chains', Array.isArray(s.liveChains) && s.liveChains.length ? s.liveChains.join(' + ') : '—') +
       kv('feed', s.feed ?? '—') +
       kv('ticker', (s.tickerPrice??'—') + ' via ' + (s.tickerVenue??'—')) +
       kv('clock skew', fmtMs(s.clockSkewMs)) +

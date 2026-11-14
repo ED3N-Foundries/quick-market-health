@@ -169,6 +169,8 @@ export type HealthReport = {
     chainKey: string | null
     chainName: string | null
     chainId: number | null
+    /** Live chains from /api/markets + /api/status (null when unknown). */
+    liveChains: string[] | null
     feed: string | null
     tickerPrice: string | null
     tickerVenue: string | null
@@ -544,43 +546,60 @@ export function nearStatusRequest(url: string): { url: string; init: RequestInit
   }
 }
 
-let cachedNearRpc: { at: number; result: CheckResult } | null = null
+let cachedNearRpc: Map<string, { at: number; result: CheckResult }> = new Map()
 
 /** Test hook: clear the 60s NEAR probe cache. */
 export function resetNearProbeCacheForTest(): void {
-  cachedNearRpc = null
+  cachedNearRpc = new Map()
 }
 
-async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckResult> {
+/** Resolve the RPC URL for a chain, honoring an explicit override only when
+ *  it matches the chain family (mirrors the market's rpcFor logic). */
+function rpcUrlFor(chainKey: string, env: HealthEnv): string | null {
+  const def = CHAIN_RPC[chainKey]
+  if (!def) return null
+  const custom = env.rpcUrl?.trim()
+  if (!custom) return def
+  const isNear = chainKey.startsWith("near")
+  if (isNear) return custom.includes("near") ? custom : def
+  return custom.includes("near") ? def : custom
+}
+
+async function probeRpc(chainKey: string | null, env: HealthEnv, checkId = "rpc"): Promise<CheckResult> {
   const started = performance.now()
   if (!chainKey) {
-    return { id: "rpc", label: "chain RPC", ok: false, ms: null, detail: "skipped: no chainKey from /api/config", error: "no chain" }
+    return { id: checkId, label: "chain RPC", ok: false, ms: null, detail: "skipped: no chainKey from /api/config", error: "no chain" }
+  }
+  const overrideUrl = rpcUrlFor(chainKey, env)
+  if (!overrideUrl) {
+    return { id: checkId, label: "chain RPC", ok: false, ms: null, detail: `skipped: unknown chain ${chainKey}`, error: "unknown chain" }
   }
   try {
     if (chainKey === "near-testnet") {
       // Same egress IP as the market. Probe at most every 60s with a short
       // timeout so the health check does not add to a 429 burst.
       const now = Date.now()
-      if (cachedNearRpc && now - cachedNearRpc.at < 60_000) return cachedNearRpc.result
-      const request = nearStatusRequest(env.rpcUrl || CHAIN_RPC[chainKey]!)
+      const cached = cachedNearRpc.get(checkId)
+      if (cached && now - cached.at < 60_000) return cached.result
+      const request = nearStatusRequest(overrideUrl)
       const { ms, res, text } = await timedFetch(request.url, request.init, Math.min(env.requestTimeoutMs, 5_000))
       let result: CheckResult
-      if (!res.ok) result = { id: "rpc", label: "NEAR RPC status", ok: false, ms, detail: `HTTP ${res.status}`, error: text.slice(0, 200) }
+      if (!res.ok) result = { id: checkId, label: "NEAR RPC status", ok: false, ms, detail: `HTTP ${res.status}`, error: text.slice(0, 200) }
       else {
         const body = (parseJson(text) as { result?: { chain_id?: string; sync_info?: { latest_block_height?: number } } } | null)?.result
         const height = body?.sync_info?.latest_block_height
         result = {
-          id: "rpc",
+          id: checkId,
           label: "NEAR RPC status",
           ok: true,
           ms,
           detail: `${body?.chain_id ?? "testnet"} @ height ${height ?? "?"}`,
         }
       }
-      cachedNearRpc = { at: now, result }
+      cachedNearRpc.set(checkId, { at: now, result })
       return result
     }
-    const url = env.rpcUrl || CHAIN_RPC[chainKey]!
+    const url = overrideUrl
     const headers = { "content-type": "application/json" }
     const chainCall = await timedFetch(
       url,
@@ -588,7 +607,7 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
       env.requestTimeoutMs,
     )
     if (!chainCall.res.ok) {
-      return { id: "rpc", label: "EVM RPC eth_chainId", ok: false, ms: chainCall.ms, detail: `HTTP ${chainCall.res.status}`, error: chainCall.text.slice(0, 200) }
+      return { id: checkId, label: "EVM RPC eth_chainId", ok: false, ms: chainCall.ms, detail: `HTTP ${chainCall.res.status}`, error: chainCall.text.slice(0, 200) }
     }
     const chainBody = parseJson(chainCall.text) as { result?: string } | null
     const gotId = chainBody?.result ? parseInt(chainBody.result, 16) : NaN
@@ -601,10 +620,10 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
     const block = blockBody?.result ? parseInt(blockBody.result, 16) : NaN
     const totalMs = performance.now() - started
     if (!blockCall.res.ok || !Number.isFinite(block)) {
-      return { id: "rpc", label: "EVM RPC eth_blockNumber", ok: false, ms: totalMs, detail: `HTTP ${blockCall.res.status}`, error: blockCall.text.slice(0, 200) }
+      return { id: checkId, label: "EVM RPC eth_blockNumber", ok: false, ms: totalMs, detail: `HTTP ${blockCall.res.status}`, error: blockCall.text.slice(0, 200) }
     }
     return {
-      id: "rpc",
+      id: checkId,
       label: `EVM RPC (${url.replace(/^https?:\/\//, "").split("/")[0]})`,
       ok: true,
       ms: totalMs,
@@ -613,8 +632,33 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
   } catch (error) {
     const ms = performance.now() - started
     const message = error instanceof Error ? error.message : String(error)
-    return { id: "rpc", label: "chain RPC", ok: false, ms: message.includes("abort") ? ms : ms, detail: "request failed", error: message.slice(0, 300) }
+    return { id: checkId, label: "chain RPC", ok: false, ms: message.includes("abort") ? ms : ms, detail: "request failed", error: message.slice(0, 300) }
   }
+}
+
+/** Live chain keys from /api/markets, request-scoped fallback last. */
+export function parseLiveChains(value: unknown, fallback: string | null = null): string[] | null {
+  const out: string[] = []
+  const push = (key: unknown) => {
+    if (typeof key !== "string") return
+    if (!(key in CHAIN_RPC)) return
+    if (!out.includes(key)) out.push(key)
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const body = value as Record<string, unknown>
+    const markets = Array.isArray(body.markets) ? body.markets : null
+    if (markets) {
+      for (const item of markets) {
+        if (item && typeof item === "object") push((item as Record<string, unknown>).chainKey)
+      }
+    }
+    // Internal /api/status shape.
+    if (Array.isArray(body.liveChains)) for (const key of body.liveChains as unknown[]) push(key)
+  } else if (Array.isArray(value)) {
+    for (const key of value as unknown[]) push(key)
+  }
+  if (fallback) push(fallback)
+  return out.length > 0 ? out : null
 }
 
 export type NearCooldownHealth = {
@@ -629,6 +673,7 @@ type ProcessProbe = {
   previous: MarketPrevious
   nearRpc: NearRpcHealth[] | null
   nearCooldown: NearCooldownHealth | null
+  liveChains: string[] | null
   reached: boolean
   hangs: HangSummary
   routeTails: Record<string, TailStat>
@@ -912,7 +957,7 @@ async function probeFunding(env: HealthEnv): Promise<FundingSnapshot | null> {
 }
 
 async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
-  const empty = (): ProcessProbe => ({ process: null, previous: null, nearRpc: null, nearCooldown: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
+  const empty = (): ProcessProbe => ({ process: null, previous: null, nearRpc: null, nearCooldown: null, liveChains: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
   // Internal port only. The public /api/health answer is liveness and has no process body.
   for (const path of ["/api/status", "/api/health"]) {
     try {
@@ -927,6 +972,7 @@ async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
         previous,
         nearRpc: parseNearRpcStatus(obj.nearRpc),
         nearCooldown: parseNearCooldown(obj.nearCooldown),
+        liveChains: parseLiveChains(obj, null),
         reached: true,
         hangs: parseHangs(obj.hangs),
         routeTails: parseTailMap(obj.routePctl ?? obj.routePctlAll),
@@ -950,6 +996,15 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
   // Container state resolves in parallel with the HTTP probes (cached ~3s).
   const fundingPromise = probeFunding(env)
   const agentPromise = probeAgent(env)
+  const marketsPromise: Promise<unknown | null> = (async () => {
+    try {
+      const { res, text } = await timedFetch(`${base}/api/markets`, {}, env.requestTimeoutMs)
+      if (!res.ok) return null
+      return parseJson(text)
+    } catch {
+      return null
+    }
+  })()
   const dockerPromise = getDockerSnapshot(env).catch(
     (): DockerSnapshot => ({ available: false, sock: env.dockerSock || null, error: "docker snapshot threw", at: Date.now(), containers: [] }),
   )
@@ -1091,13 +1146,32 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
     checks.push({ id: "ws", label: "WS /ws first message", ok: false, ms: null, detail: "probe threw", error: String(error).slice(0, 300) })
   }
 
-  // 7. chain RPC (uses chainKey from config)
-  checks.push(await probeRpc(cfg?.chainKey ?? null, env))
-
-  // 8. market process vitals (internal crash-reason endpoint; never affects status)
-  const proc = await probeMarketProcess(env)
+  // 7. chain RPCs (one per live chain from /api/markets, fallback to /api/config)
+  const marketsBody = await marketsPromise
+  const procEarly = probeMarketProcess(env)
+  // Await process telemetry before probing RPCs so a failed /api/markets
+  // still yields the internal liveChains list for the RPC set.
+  const proc = await procEarly
   const funding = await fundingPromise
   const agents = await agentPromise
+  const fundingKeys = funding ? funding.chains.map((c) => c.chainKey) : []
+  const unioned = new Set<string>()
+  for (const list of [parseLiveChains(marketsBody, null), parseLiveChains(proc.liveChains, null), parseLiveChains(fundingKeys, null)]) {
+    if (list) for (const key of list) unioned.add(key)
+  }
+  if (cfg?.chainKey && unioned.size === 0 && cfg.chainKey in CHAIN_RPC) unioned.add(cfg.chainKey)
+  const liveKeys = unioned.size > 0 ? [...unioned] : null
+  if (!liveKeys) {
+    checks.push(await probeRpc(null, env))
+  } else if (liveKeys.length === 1) {
+    // Single-chain deployments keep the historic `rpc` id for history continuity.
+    checks.push(await probeRpc(liveKeys[0]!, env, "rpc"))
+  } else {
+    const results = await Promise.all(liveKeys.map((key) => probeRpc(key, env, `rpc-${key}`)))
+    for (const result of results) checks.push(result)
+  }
+
+  // 8. market process vitals (internal crash-reason endpoint; never affects status)
 
   // Summary fields from state/feeds
   const board = (state?.board as Record<string, unknown> | undefined) ?? null
@@ -1166,6 +1240,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
       chainKey: cfg?.chainKey ?? null,
       chainName: cfg?.chainName ?? null,
       chainId: typeof cfg?.chainId === "number" ? cfg.chainId : null,
+      liveChains: liveKeys,
       feed: typeof state?.feed === "string" ? (state.feed as string) : null,
       tickerPrice: typeof ticker?.price === "string" ? (ticker.price as string) : null,
       tickerVenue: typeof ticker?.venue === "string" ? (ticker.venue as string) : null,
