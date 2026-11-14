@@ -14,6 +14,7 @@ services:
       # point at the API container. For host-local quick-market use
       # TARGET_URL=http://host.docker.internal:3001
       TARGET_URL: ${TARGET_URL:-http://quick-market:3001}
+      INTERNAL_URL: ${INTERNAL_URL:-}
       AGENT_URL: ${AGENT_URL:-http://quick-market-agent:3011}
       WS_TARGET: ${WS_TARGET:-}
       RPC_URL: ${RPC_URL:-}
@@ -25,6 +26,7 @@ services:
       # image runs as root, so no group fix-up is needed here (the hardened
       # deploy image drops to bun:bun and uses DOCKER_GID instead).
       DOCKER_SOCK: ${DOCKER_SOCK:-}
+      DOCKER_GID: ${DOCKER_GID:-}
       DOCKER_CONTAINERS: ${DOCKER_CONTAINERS:-quick-market,quick-market-agent}
       DOCKER_TIMEOUT_MS: ${DOCKER_TIMEOUT_MS:-2500}
       DOCKER_LOGS_TAIL: ${DOCKER_LOGS_TAIL:-200}
