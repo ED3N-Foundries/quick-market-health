@@ -205,13 +205,22 @@ function renderAgents(r){
 }
 function renderNearRpc(r){
   const rows = r.nearRpc;
-  if (!rows) {
+  const cooling = r.nearCooldown;
+  if (!rows && !cooling) {
     rpcMetaEl.textContent = 'market /api/status did not provide endpoint telemetry';
     nearRpcEl.innerHTML = '<tr><td colspan="6" class="dim">unavailable — market unreachable or older version</td></tr>';
     return;
   }
-  rpcMetaEl.textContent = rows.length + ' configured · from the market process, not the external RPC probe above';
-  if (!rows.length) {
+  let prefix = '';
+  if (cooling && cooling.cooling) {
+    const until = cooling.untilMs != null ? new Date(cooling.untilMs).toLocaleTimeString() : '—';
+    const wait = cooling.retryAfterMs != null ? fmtAge(cooling.retryAfterMs) : '—';
+    prefix = 'NEAR funding COOLING until ' + until + ' (' + wait + ')' + (cooling.reason ? ' · ' + cooling.reason : '') + ' — grants/withdraws paused, trading live. ';
+  } else if (cooling) {
+    prefix = 'NEAR funding live — grants/withdraws open. ';
+  }
+  rpcMetaEl.textContent = prefix + (rows ? rows.length + ' configured · from the market process, not the external RPC probe above' : 'no endpoint telemetry');
+  if (!rows || !rows.length) {
     nearRpcEl.innerHTML = '<tr><td colspan="6" class="dim">no NEAR RPC endpoints on the active chain</td></tr>';
     return;
   }
@@ -385,8 +394,12 @@ function renderFunding(r){
     const notes = [];
     if (c.native && c.native.short) notes.push(c.native.symbol === 'ETH' ? 'needs gas' : ('needs ' + (c.native.symbol || 'native')));
     if (c.tokenBalance && c.tokenBalance.short) notes.push('short of owed');
+    if (c.cooling && c.cooling.cooling) notes.push('FUNDING COOLING');
     const agents = (c.shortAgents || []).map(a => esc(a.account) + (a.missing ? ' missing' : ' ' + esc(a.near))).join('<br>');
     const lines = (c.lines || []).map(line => esc(line)).join('<br>');
+    const cooling = c.cooling && c.cooling.cooling
+      ? '<div class="meta" style="margin-top:8px;color:var(--warn)">NEAR funding COOLING until ' + fmtDT(c.cooling.untilMs) + ' (' + fmtAge(c.cooling.retryAfterMs) + ')' + (c.cooling.reason ? ' · ' + esc(c.cooling.reason) : '') + ' — grants/withdraws paused, trading live</div>'
+      : '';
     return '<div class="fund">' +
       '<h3>' + esc(c.chainName || c.chainKey || 'chain') + (c.chainId ? ' (' + esc(c.chainId) + ')' : '') +
       (notes.length ? ' <span class="short">' + esc(notes.join(' · ')) + '</span>' : '') + '</h3>' +
@@ -397,6 +410,7 @@ function renderFunding(r){
       fundRow(c.tokenBalance ? c.tokenBalance.symbol : 'token', esc((c.tokenBalance && c.tokenBalance.have) || '—') + ' / owed ' + esc((c.tokenBalance && c.tokenBalance.need) || '—')) +
       (c.explorer ? fundRow('explorer', '<a href="' + esc(c.explorer) + '" target="_blank" rel="noopener">' + esc(c.explorer) + '</a>') : '') +
       '</div>' +
+      cooling +
       (lines ? '<div class="meta" style="margin-top:8px">' + lines + '</div>' : '') +
       (agents ? '<div class="meta" style="margin-top:8px">short agents<br>' + agents + '</div>' : '') +
       (c.error ? '<div class="err">' + esc(c.error) + '</div>' : '') +

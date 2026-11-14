@@ -153,6 +153,8 @@ export type HealthReport = {
   process: MarketProcess
   /** Configured NEAR RPC endpoints and the market's own attempt results. Null on older/unreachable markets. */
   nearRpc: NearRpcHealth[] | null
+  /** Funding-plane cooldown from /api/status (`nearCooldown`). Null when unknown. */
+  nearCooldown: NearCooldownHealth | null
   /** Previous market run info (crash reason survives restarts), null when unknown. */
   previous: MarketPrevious
   tracking: TrackerState
@@ -212,6 +214,7 @@ export type FundingChainView = {
   lines: string[]
   shortAgents: { account: string; near: string; need: string; missing: boolean }[]
   error: string | null
+  cooling: NearCooldownHealth | null
 }
 
 export type FundingSnapshot = {
@@ -541,6 +544,13 @@ export function nearStatusRequest(url: string): { url: string; init: RequestInit
   }
 }
 
+let cachedNearRpc: { at: number; result: CheckResult } | null = null
+
+/** Test hook: clear the 60s NEAR probe cache. */
+export function resetNearProbeCacheForTest(): void {
+  cachedNearRpc = null
+}
+
 async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckResult> {
   const started = performance.now()
   if (!chainKey) {
@@ -548,18 +558,27 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
   }
   try {
     if (chainKey === "near-testnet") {
+      // Same egress IP as the market. Probe at most every 60s with a short
+      // timeout so the health check does not add to a 429 burst.
+      const now = Date.now()
+      if (cachedNearRpc && now - cachedNearRpc.at < 60_000) return cachedNearRpc.result
       const request = nearStatusRequest(env.rpcUrl || CHAIN_RPC[chainKey]!)
-      const { ms, res, text } = await timedFetch(request.url, request.init, env.requestTimeoutMs)
-      if (!res.ok) return { id: "rpc", label: "NEAR RPC status", ok: false, ms, detail: `HTTP ${res.status}`, error: text.slice(0, 200) }
-      const body = (parseJson(text) as { result?: { chain_id?: string; sync_info?: { latest_block_height?: number } } } | null)?.result
-      const height = body?.sync_info?.latest_block_height
-      return {
-        id: "rpc",
-        label: "NEAR RPC status",
-        ok: true,
-        ms,
-        detail: `${body?.chain_id ?? "testnet"} @ height ${height ?? "?"}`,
+      const { ms, res, text } = await timedFetch(request.url, request.init, Math.min(env.requestTimeoutMs, 5_000))
+      let result: CheckResult
+      if (!res.ok) result = { id: "rpc", label: "NEAR RPC status", ok: false, ms, detail: `HTTP ${res.status}`, error: text.slice(0, 200) }
+      else {
+        const body = (parseJson(text) as { result?: { chain_id?: string; sync_info?: { latest_block_height?: number } } } | null)?.result
+        const height = body?.sync_info?.latest_block_height
+        result = {
+          id: "rpc",
+          label: "NEAR RPC status",
+          ok: true,
+          ms,
+          detail: `${body?.chain_id ?? "testnet"} @ height ${height ?? "?"}`,
+        }
       }
+      cachedNearRpc = { at: now, result }
+      return result
     }
     const url = env.rpcUrl || CHAIN_RPC[chainKey]!
     const headers = { "content-type": "application/json" }
@@ -598,10 +617,18 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
   }
 }
 
+export type NearCooldownHealth = {
+  cooling: boolean
+  retryAfterMs: number
+  untilMs: number | null
+  reason: string | null
+}
+
 type ProcessProbe = {
   process: MarketProcess
   previous: MarketPrevious
   nearRpc: NearRpcHealth[] | null
+  nearCooldown: NearCooldownHealth | null
   reached: boolean
   hangs: HangSummary
   routeTails: Record<string, TailStat>
@@ -646,6 +673,18 @@ export function parseNearRpcStatus(value: unknown): NearRpcHealth[] | null {
     })
   }
   return rows
+}
+
+export function parseNearCooldown(value: unknown): NearCooldownHealth | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  if (typeof row.cooling !== "boolean") return null
+  return {
+    cooling: row.cooling,
+    retryAfterMs: numOrNull(row.retryAfterMs) ?? 0,
+    untilMs: numOrNull(row.untilMs),
+    reason: strOrNull(row.reason, 300),
+  }
 }
 
 /** Parse a {name: {count/avgMs/maxMs/p50/p90/p95/p99}} map; caps keys, drops junk. */
@@ -843,6 +882,7 @@ export function parseFunding(body: unknown): FundingSnapshot | null {
       lines,
       shortAgents: agents,
       error: typeof row.error === "string" ? row.error.slice(0, 240) : null,
+      cooling: parseNearCooldown(row.cooling),
     })
   }
   return { at: typeof raw.at === "number" ? raw.at : Date.now(), chains }
@@ -872,7 +912,7 @@ async function probeFunding(env: HealthEnv): Promise<FundingSnapshot | null> {
 }
 
 async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
-  const empty = (): ProcessProbe => ({ process: null, previous: null, nearRpc: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
+  const empty = (): ProcessProbe => ({ process: null, previous: null, nearRpc: null, nearCooldown: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
   // Internal port only. The public /api/health answer is liveness and has no process body.
   for (const path of ["/api/status", "/api/health"]) {
     try {
@@ -886,6 +926,7 @@ async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
         process,
         previous,
         nearRpc: parseNearRpcStatus(obj.nearRpc),
+        nearCooldown: parseNearCooldown(obj.nearCooldown),
         reached: true,
         hangs: parseHangs(obj.hangs),
         routeTails: parseTailMap(obj.routePctl ?? obj.routePctlAll),
@@ -1114,6 +1155,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
     downReason,
     process: proc.process,
     nearRpc: proc.nearRpc,
+    nearCooldown: proc.nearCooldown,
     previous: proc.previous,
     tracking,
     hangs: proc.hangs,
