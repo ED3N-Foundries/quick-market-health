@@ -79,6 +79,14 @@ details summary { cursor:pointer; color:var(--dim); }
 a { color:#7db8ff; }
 select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-size:12px; }
 .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
+.tabs { display:flex; gap:6px; }
+.tabs button { background:#0a0d11; color:var(--dim); border:1px solid var(--line); border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; }
+.tabs button.on { color:var(--txt); border-color:var(--info); background:rgba(90,169,255,.12); }
+th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+th.sortable:hover { color:var(--txt); }
+.addrbtn { background:none; border:0; color:#7db8ff; cursor:pointer; padding:0; font:inherit; }
+.addrbtn:hover { text-decoration:underline; }
+.trunc { margin-top:8px; font-size:12px; color:var(--warn); overflow-wrap:anywhere; }
 </style>
 </head>
 <body>
@@ -97,6 +105,23 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 <section class="card"><h2>crash reasons · restarts · outage</h2><div id="crash" class="kv"></div><div id="downreason" class="meta" style="margin-top:8px"></div></section>
 <section class="card"><h2>market state</h2><div id="state" class="kv"></div></section>
 <section class="card"><h2>agents</h2><div id="agents" class="kv">waiting for first probe…</div></section>
+<section class="card"><h2>agents trading</h2>
+<div class="toolbar">
+<div class="tabs"><button type="button" id="tab-near" class="on">NEAR</button><button type="button" id="tab-base" class="">BASE</button></div>
+<select id="rosterfilter"><option value="all">all</option><option value="woke">awake</option><option value="richest">richest</option><option value="stuck">stuck</option><option value="slept">asleep</option></select>
+<span id="rostermeta" class="meta">waiting…</span>
+<button type="button" id="rosterprev">‹ prev</button><button type="button" id="rosternext">next ›</button>
+</div>
+<div class="tblwrap"><table class="wide">
+<thead><tr>
+<th data-sort="idx">#</th><th>wallet</th><th>state</th><th>mind</th>
+<th data-sort="bankroll" class="sortable">bankroll ⇅</th><th>last</th><th>skip</th>
+<th data-sort="wins" class="sortable">W/L ⇅</th><th data-sort="updated" class="sortable">updated ⇅</th>
+</tr></thead>
+<tbody id="roster"><tr><td colspan="9" class="dim">waiting for first roster poll…</td></tr></tbody>
+</table></div>
+<div id="rostertrunc" class="trunc"></div>
+</section>
 <section class="card"><h2>pieces · ping · ms</h2><div class="tblwrap"><table>
 <thead><tr><th>piece</th><th>ms</th><th>state</th></tr></thead>
 <tbody id="checks"><tr><td colspan="3" class="dim">waiting for first probe…</td></tr></tbody>
@@ -172,6 +197,86 @@ function tailClass(ms){ if(ms==null||!isFinite(ms)) return ''; if(ms>=1000) retu
 function tailCell(ms){ const c = tailClass(ms); return '<span class="ms"' + (c ? ' style="color:var(--' + (c==='bad'?'bad':'warn') + ');font-weight:700"' : '') + '>' + fmtMs(ms) + '</span>'; }
 function esc(s){ return String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmtCount(v){ if(v==null||!isFinite(v)) return '—'; return Math.round(v).toLocaleString('en-US'); }
+const rosterEl = document.getElementById('roster');
+const rosterMeta = document.getElementById('rostermeta');
+const rosterTrunc = document.getElementById('rostertrunc');
+const rosterFilterSel = document.getElementById('rosterfilter');
+const tabNear = document.getElementById('tab-near');
+const tabBase = document.getElementById('tab-base');
+const rosterState = { 'near-testnet': { filter:'all', sort:'bankroll', dir:'desc', offset:0, limit:25 }, 'base-sepolia': { filter:'all', sort:'bankroll', dir:'desc', offset:0, limit:25 } };
+let rosterChain = 'near-testnet';
+let rosterBusy = false;
+function rosterQuery(){
+  const s = rosterState[rosterChain];
+  return 'chain='+encodeURIComponent(rosterChain)+'&filter='+encodeURIComponent(s.filter)+'&sort='+encodeURIComponent(s.sort)+'&dir='+encodeURIComponent(s.dir)+'&offset='+encodeURIComponent(s.offset)+'&limit='+encodeURIComponent(s.limit);
+}
+async function tickRoster(){
+  if (rosterBusy || document.hidden) return;
+  rosterBusy = true;
+  try {
+    const r = await fetch('api/agents/roster?'+rosterQuery()).then(r => r.json());
+    renderRoster(r);
+  } catch (e) {
+    rosterMeta.textContent = 'roster unreachable';
+  } finally { rosterBusy = false; }
+}
+function renderRoster(r){
+  if (!r || r.ok === false) { rosterEl.innerHTML = '<tr><td colspan="9" class="err">'+esc((r && r.error) || 'roster unreachable')+'</td></tr>'; rosterMeta.textContent='error'; rosterTrunc.textContent=''; return; }
+  const rows = Array.isArray(r.rows) ? r.rows : [];
+  const total = r.total ?? 0;
+  const from = total === 0 ? 0 : Math.min(total, (r.offset||0)+1);
+  const to = (r.offset||0)+rows.length;
+  rosterMeta.textContent = 'showing '+from+'–'+to+' of '+fmtCount(total)+' · '+esc(r.chain||'')+' · '+new Date(r.at).toLocaleTimeString();
+  rosterEl.innerHTML = rows.length ? rows.map(w => {
+    const state = w.online ? 'awake' : 'asleep';
+    const dot = w.online ? 'ok' : 'unused';
+    const last = w.lastSide ? esc(w.lastSide)+' '+fmtMoney(w.lastStakeMicros) : '—';
+    return '<tr><td class="ms">'+esc(w.idx)+'</td>' +
+      '<td><button type="button" class="addrbtn" data-copy="'+esc(w.address)+'" title="click to copy full address">'+esc(w.short)+'</button></td>' +
+      '<td><span class="dot '+dot+'"></span>'+state+'</td>' +
+      '<td>'+esc(w.mind||'—')+'</td>' +
+      '<td class="ms">'+fmtMoney(w.bankrollMicros)+'</td>' +
+      '<td>'+last+'</td><td class="dim">'+esc(w.lastSkip||'—')+'</td>' +
+      '<td class="ms">'+esc(w.wins)+'/'+esc(w.losses)+'</td>' +
+      '<td class="dim">'+(w.updatedAt?fmtAge(Date.now()-w.updatedAt)+' ago':'—')+'</td></tr>';
+  }).join('') : '<tr><td colspan="9" class="dim">no wallets match this filter — grants may still be enrolling</td></tr>';
+  let note = '';
+  if (r.capped) note += 'hard cap: asked '+esc(r.requestedLimit)+' rows, capped to '+esc(r.limit)+'. ';
+  if (r.truncated && r.hidden) {
+    note += 'hidden ' + fmtCount(r.hidden.count) + ' wallets · ' + fmtMoney(r.hidden.bankrollMicros) + ' bankroll · ' + fmtCount(r.hidden.online) + ' online not shown on this page.';
+  } else if (!rows.length && total > 0) {
+    note = 'page past the end — press prev to go back.';
+  }
+  rosterTrunc.textContent = note;
+}
+rosterEl.addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest('button[data-copy]') : null;
+  if (!btn || !navigator.clipboard) return;
+  navigator.clipboard.writeText(btn.getAttribute('data-copy') || '').then(() => { const o = btn.textContent; btn.textContent = 'copied'; setTimeout(() => { btn.textContent = o; }, 1200); });
+});
+function setTab(chain){
+  rosterChain = chain;
+  tabNear.className = chain === 'near-testnet' ? 'on' : '';
+  tabBase.className = chain === 'base-sepolia' ? 'on' : '';
+  const s = rosterState[chain];
+  rosterFilterSel.value = s.filter;
+  tickRoster();
+}
+tabNear.addEventListener('click', () => setTab('near-testnet'));
+tabBase.addEventListener('click', () => setTab('base-sepolia'));
+rosterFilterSel.addEventListener('change', () => { rosterState[rosterChain].filter = rosterFilterSel.value; rosterState[rosterChain].offset = 0; tickRoster(); });
+document.getElementById('rosterprev').addEventListener('click', () => { const s = rosterState[rosterChain]; s.offset = Math.max(0, s.offset - s.limit); tickRoster(); });
+document.getElementById('rosternext').addEventListener('click', () => { const s = rosterState[rosterChain]; s.offset = Math.min(10000, s.offset + s.limit); tickRoster(); });
+document.querySelectorAll('th[data-sort]').forEach(th => {
+  th.addEventListener('click', () => {
+    const s = rosterState[rosterChain];
+    const k = th.getAttribute('data-sort');
+    if (s.sort === k) s.dir = s.dir === 'desc' ? 'asc' : 'desc';
+    else { s.sort = k; s.dir = k === 'idx' ? 'asc' : 'desc'; }
+    s.offset = 0;
+    tickRoster();
+  });
+});
 function renderAgents(r){
   const kv = (k,v) => '<div><b>'+k+'</b><span>'+v+'</span></div>';
   const a = r.agents;
@@ -523,6 +628,9 @@ copyBtn.addEventListener('click', async (e) => {
 });
 tick();
 setInterval(tick, REFRESH);
+tickRoster();
+setInterval(tickRoster, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tickRoster(); });
 </script>
 </body>
 </html>`

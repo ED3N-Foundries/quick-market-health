@@ -946,6 +946,18 @@ export async function probeAgent(env: HealthEnv, now = Date.now()): Promise<Agen
   }
 }
 
+/** Lightweight roster passthrough. Validated upstream; 4s timeout so a 5s UI poll never piles up. */
+export async function fetchAgentRoster(env: HealthEnv, query: string): Promise<unknown> {
+  if (!env.agentUrl) return { ok: false, error: "agent not configured" }
+  try {
+    const { res, text } = await timedFetch(`${env.agentUrl}/api/roster${query}`, {}, Math.min(env.requestTimeoutMs, 4_000))
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    return parseJson(text) ?? { ok: false, error: "unreadable roster" }
+  } catch (error) {
+    return { ok: false, error: String(error).slice(0, 300) }
+  }
+}
+
 async function probeFunding(env: HealthEnv): Promise<FundingSnapshot | null> {
   try {
     const { res, text } = await timedFetch(`${env.internalUrl}/api/funding`, {}, Math.min(env.requestTimeoutMs, 5000))
