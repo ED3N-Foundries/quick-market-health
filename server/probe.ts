@@ -32,6 +32,24 @@ export type VenueHealth = {
   stale: boolean
 }
 
+export type NearRpcHealth = {
+  url: string
+  state: "ready" | "cooling" | "error" | "unused"
+  timeoutMs: number
+  sendTimeoutMs: number
+  backoffMs: number
+  attempts: number
+  successes: number
+  failures: number
+  lastAttemptAt: number | null
+  lastSuccessAt: number | null
+  lastFailureAt: number | null
+  lastMs: number | null
+  lastMethod: string | null
+  lastError: string | null
+  quietForMs: number
+}
+
 export type MarketLastError = {
   message: string | null
   kind: string | null
@@ -133,6 +151,8 @@ export type HealthReport = {
   downReason: string | null
   /** Market process vitals from /api/status (null when the market is unreachable). */
   process: MarketProcess
+  /** Configured NEAR RPC endpoints and the market's own attempt results. Null on older/unreachable markets. */
+  nearRpc: NearRpcHealth[] | null
   /** Previous market run info (crash reason survives restarts), null when unknown. */
   previous: MarketPrevious
   tracking: TrackerState
@@ -396,7 +416,7 @@ type Cfg = {
 const CHAIN_RPC: Record<string, string> = {
   base: "https://mainnet.base.org",
   "base-sepolia": "https://sepolia.base.org",
-  "near-testnet": "https://rpc.testnet.fastnear.com",
+  "near-testnet": "https://test.rpc.fastnear.com",
 }
 
 async function probeWs(url: string, timeoutMs: number): Promise<{
@@ -570,6 +590,7 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
 type ProcessProbe = {
   process: MarketProcess
   previous: MarketPrevious
+  nearRpc: NearRpcHealth[] | null
   reached: boolean
   hangs: HangSummary
   routeTails: Record<string, TailStat>
@@ -584,6 +605,36 @@ function numOrNull(value: unknown): number | null {
 function strOrNull(value: unknown, max = 300): string | null {
   if (typeof value !== "string") return null
   return value.slice(0, max)
+}
+
+export function parseNearRpcStatus(value: unknown): NearRpcHealth[] | null {
+  if (!Array.isArray(value)) return null
+  const rows: NearRpcHealth[] = []
+  for (const item of value.slice(0, 4)) {
+    if (!item || typeof item !== "object") continue
+    const raw = item as Record<string, unknown>
+    const url = strOrNull(raw.url, 300)
+    if (!url) continue
+    const state = raw.state === "ready" || raw.state === "cooling" || raw.state === "error" || raw.state === "unused" ? raw.state : "unused"
+    rows.push({
+      url,
+      state,
+      timeoutMs: numOrNull(raw.timeoutMs) ?? 0,
+      sendTimeoutMs: numOrNull(raw.sendTimeoutMs) ?? 0,
+      backoffMs: numOrNull(raw.backoffMs) ?? 0,
+      attempts: numOrNull(raw.attempts) ?? 0,
+      successes: numOrNull(raw.successes) ?? 0,
+      failures: numOrNull(raw.failures) ?? 0,
+      lastAttemptAt: numOrNull(raw.lastAttemptAt),
+      lastSuccessAt: numOrNull(raw.lastSuccessAt),
+      lastFailureAt: numOrNull(raw.lastFailureAt),
+      lastMs: numOrNull(raw.lastMs),
+      lastMethod: strOrNull(raw.lastMethod, 64),
+      lastError: strOrNull(raw.lastError),
+      quietForMs: numOrNull(raw.quietForMs) ?? 0,
+    })
+  }
+  return rows
 }
 
 /** Parse a {name: {count/avgMs/maxMs/p50/p90/p95/p99}} map; caps keys, drops junk. */
@@ -810,7 +861,7 @@ async function probeFunding(env: HealthEnv): Promise<FundingSnapshot | null> {
 }
 
 async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
-  const empty = (): ProcessProbe => ({ process: null, previous: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
+  const empty = (): ProcessProbe => ({ process: null, previous: null, nearRpc: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
   // Internal port only. The public /api/health answer is liveness and has no process body.
   for (const path of ["/api/status", "/api/health"]) {
     try {
@@ -823,6 +874,7 @@ async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
       return {
         process,
         previous,
+        nearRpc: parseNearRpcStatus(obj.nearRpc),
         reached: true,
         hangs: parseHangs(obj.hangs),
         routeTails: parseTailMap(obj.routePctl ?? obj.routePctlAll),
@@ -1050,6 +1102,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
     checks,
     downReason,
     process: proc.process,
+    nearRpc: proc.nearRpc,
     previous: proc.previous,
     tracking,
     hangs: proc.hangs,

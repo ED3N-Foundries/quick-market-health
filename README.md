@@ -11,14 +11,14 @@ client would, times every piece in ms, and shows what is working vs wrong.
 |---|---|
 | `GET /api/config` | chain, windows, fee, treasury |
 | `GET /api/health` | public liveness (`{"ok":true}` only) |
-| `GET /api/status` on `INTERNAL_URL` | crash-reason endpoint: boot id/count, uptime, last error/signal, previous unclean shutdown, memory — no DB touch |
+| `GET /api/status` on `INTERNAL_URL` | crash-reason endpoint: boot id/count, uptime, last error/signal, previous unclean shutdown, memory, and per-endpoint NEAR RPC attempts/errors — no DB touch |
 | `GET /api/funding` on `INTERNAL_URL` | public treasury address, balances, and ledger gap per live chain |
 | `GET /api/state` | feed live/stale, ticker, board, tape points + age, clock skew |
 | `GET /api/feeds` | per-venue price, age, role, swing, gap, socket |
 | `GET /api/rounds?limit=1` | history readable |
 | agent stats on `AGENT_URL` | swarm status, stake p50/p90, money, recent averages. A miss does not change the verdict |
 | `WS /ws` | connect ms, first `snapshot` or `round` msg ms, `lag` echo round-trip ms |
-| chain RPC | EVM `eth_chainId` + `eth_blockNumber`, or NEAR `/status` |
+| chain RPC | EVM `eth_chainId` + `eth_blockNumber`, or NEAR `/status`; the NEAR RPC card also shows every market-configured endpoint, its backoff, last latency, success/failure counts, and last error |
 
 Overall is `ok` / `degraded` (non-critical fails, e.g. RPC) / `down`
 (a critical piece — config, state, or ws — fails). Agent stats ride along

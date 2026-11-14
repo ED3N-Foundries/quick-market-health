@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { internalFrom, loadHealthEnv, wsFromHttp } from "./env"
 import { agentAvg, avgMs, pushHistory, uptimePct, withAgentAverages } from "./history"
-import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, parseFunding, parseHangs, parseSelfTail, parseTailMap, probeAgent, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
+import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, parseFunding, parseHangs, parseNearRpcStatus, parseSelfTail, parseTailMap, probeAgent, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
 import { parseAgentStats } from "./agents"
 
 describe("wsFromHttp", () => {
@@ -45,6 +45,38 @@ describe("parseFunding", () => {
     expect(parsed?.chains[0]?.treasury).toBe("0x826020c36F4e1b6320e5E3dCade1a888E9fbDeF6")
     expect(parsed?.chains[0]?.native.short).toBe(true)
     expect(JSON.stringify(parsed)).not.toContain("privateKey")
+  })
+})
+
+describe("parseNearRpcStatus", () => {
+  test("keeps endpoint attempts, timings, backoff, and errors", () => {
+    const parsed = parseNearRpcStatus([
+      {
+        url: "https://near-testnet.drpc.org",
+        state: "cooling",
+        timeoutMs: 1800,
+        sendTimeoutMs: 1800,
+        backoffMs: 1000,
+        attempts: 3,
+        successes: 1,
+        failures: 2,
+        lastAttemptAt: 100,
+        lastSuccessAt: 50,
+        lastFailureAt: 100,
+        lastMs: 1800,
+        lastMethod: "block",
+        lastError: "The operation timed out.",
+        quietForMs: 750,
+      },
+      { bad: true },
+    ])
+    expect(parsed?.length).toBe(1)
+    expect(parsed?.[0]?.state).toBe("cooling")
+    expect(parsed?.[0]?.attempts).toBe(3)
+    expect(parsed?.[0]?.lastError).toBe("The operation timed out.")
+    expect(parsed?.[0]?.quietForMs).toBe(750)
+    expect(parseNearRpcStatus(undefined)).toBeNull()
+    expect(parseNearRpcStatus([])).toEqual([])
   })
 })
 

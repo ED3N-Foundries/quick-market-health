@@ -14,7 +14,7 @@ describe("renderPage", () => {
 
   test("contains the expected card anchors", () => {
     const html = renderPage(loadHealthEnv({}))
-    for (const id of ["pill", "sub", "funding", "lifecycle", "hangs", "hangmeta", "diskline", "containers", "logs", "checks", "speeds", "bars", "tip", "raw", "copyjson", "agents"]) {
+    for (const id of ["pill", "sub", "funding", "lifecycle", "hangs", "hangmeta", "diskline", "containers", "logs", "checks", "nearrpc", "rpcmeta", "speeds", "bars", "tip", "raw", "copyjson", "agents"]) {
       expect(html).toContain(`id="${id}"`)
     }
     expect(html).not.toContain('id="boot"')
@@ -24,6 +24,7 @@ describe("renderPage", () => {
     expect(html).toContain("<h2>hangs</h2>")
     expect(html).toContain("<h2>external probe speeds</h2>")
     expect(html).toContain("<h2>agents</h2>")
+    expect(html).toContain("<h2>NEAR RPC endpoints · market</h2>")
     expect(html).not.toContain("superseded")
   })
 

@@ -30,7 +30,7 @@ table.wide { min-width:680px; }
 th, td { text-align:left; padding:8px 8px; border-top:1px solid var(--line); vertical-align:top; }
 th { border-top:0; color:var(--dim); font-weight:600; font-size:12px; }
 .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; }
-.dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); }
+.dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); } .dot.unused { background:var(--dim); }
 .ms { font-variant-numeric:tabular-nums; white-space:nowrap; }
 .err { color:var(--bad); font-size:12px; overflow-wrap:anywhere; }
 .dim { color:var(--dim); }
@@ -101,6 +101,10 @@ select { background:#0a0d11; color:var(--txt); border:1px solid var(--line); bor
 <thead><tr><th>piece</th><th>ms</th><th>state</th></tr></thead>
 <tbody id="checks"><tr><td colspan="3" class="dim">waiting for first probe…</td></tr></tbody>
 </table></div></section>
+<section class="card"><h2>NEAR RPC endpoints · market</h2><div id="rpcmeta" class="meta">waiting for first probe…</div><div class="tblwrap"><table class="wide">
+<thead><tr><th>endpoint</th><th>state</th><th>last call</th><th>attempts</th><th>last success</th><th>last error</th></tr></thead>
+<tbody id="nearrpc"><tr><td colspan="6" class="dim">waiting for first probe…</td></tr></tbody>
+</table></div></section>
 <section class="card"><h2>containers</h2><div class="tblwrap"><table class="wide">
 <thead><tr><th>container</th><th>state</th><th>health</th><th>uptime</th><th>restarts</th><th>exit</th><th>cpu</th><th>mem</th></tr></thead>
 <tbody id="containers"><tr><td colspan="8" class="dim">waiting for first probe…</td></tr></tbody>
@@ -135,6 +139,8 @@ const diskline = document.getElementById('diskline');
 const hangsEl = document.getElementById('hangs');
 const containersEl = document.getElementById('containers');
 const checksEl = document.getElementById('checks');
+const nearRpcEl = document.getElementById('nearrpc');
+const rpcMetaEl = document.getElementById('rpcmeta');
 const speedsEl = document.getElementById('speeds');
 const stateEl = document.getElementById('state');
 const agentsEl = document.getElementById('agents');
@@ -197,6 +203,31 @@ function renderAgents(r){
     kv('snapshot age', esc(fmtAge(a.ageMs))) +
     (a.lastError ? '<div class="err" style="grid-column:1/-1">' + esc(a.lastError) + '</div>' : '');
 }
+function renderNearRpc(r){
+  const rows = r.nearRpc;
+  if (!rows) {
+    rpcMetaEl.textContent = 'market /api/status did not provide endpoint telemetry';
+    nearRpcEl.innerHTML = '<tr><td colspan="6" class="dim">unavailable — market unreachable or older version</td></tr>';
+    return;
+  }
+  rpcMetaEl.textContent = rows.length + ' configured · from the market process, not the external RPC probe above';
+  if (!rows.length) {
+    nearRpcEl.innerHTML = '<tr><td colspan="6" class="dim">no NEAR RPC endpoints on the active chain</td></tr>';
+    return;
+  }
+  nearRpcEl.innerHTML = rows.map(x => {
+    const dot = x.state === 'ready' ? 'ok' : x.state === 'unused' ? 'unused' : 'bad';
+    const state = x.state + (x.quietForMs > 0 ? ' · ' + fmtAge(x.quietForMs) : '');
+    const config = 'read ' + fmtMs(x.timeoutMs) + ' · send ' + fmtMs(x.sendTimeoutMs) + ' · backoff ' + fmtMs(x.backoffMs);
+    const last = x.lastAttemptAt == null ? '—' : fmtMs(x.lastMs) + ' · ' + esc(x.lastMethod || 'RPC') + '<div class="dim">' + fmtDT(x.lastAttemptAt) + '</div>';
+    const attempts = fmtCount(x.attempts) + '<div class="dim">ok ' + fmtCount(x.successes) + ' · fail ' + fmtCount(x.failures) + '</div>';
+    const success = x.lastSuccessAt == null ? '—' : fmtAge(Math.max(0, r.at - x.lastSuccessAt)) + ' ago';
+    return '<tr><td>' + esc(x.url) + '<div class="dim">' + esc(config) + '</div></td>' +
+      '<td><span class="dot ' + dot + '"></span>' + esc(state) + '</td>' +
+      '<td class="ms">' + last + '</td><td>' + attempts + '</td><td>' + esc(success) + '</td>' +
+      '<td>' + (x.lastError ? '<span class="err">' + esc(x.lastError) + '</span>' : '<span class="dim">none</span>') + '</td></tr>';
+  }).join('');
+}
 async function tick(){
   try {
     const [r, h] = await Promise.all([
@@ -240,6 +271,7 @@ async function tick(){
     const s = r.summary || {};
     const kv = (k,v) => '<div><b>'+k+'</b><span>'+esc(v)+'</span></div>';
     renderSpeeds(r, h);
+    renderNearRpc(r);
     renderHangs(r);
     stateEl.innerHTML =
       kv('chain', (s.chainKey??'—') + ' / ' + (s.chainName??'')) +
