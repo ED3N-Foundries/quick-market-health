@@ -530,6 +530,17 @@ async function probeWs(url: string, timeoutMs: number): Promise<{
   })
 }
 
+export function nearStatusRequest(url: string): { url: string; init: RequestInit } {
+  return {
+    url: url.endsWith("/status") ? url.slice(0, -"/status".length) : url,
+    init: {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "health", method: "status", params: [] }),
+    },
+  }
+}
+
 async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckResult> {
   const started = performance.now()
   if (!chainKey) {
@@ -537,14 +548,14 @@ async function probeRpc(chainKey: string | null, env: HealthEnv): Promise<CheckR
   }
   try {
     if (chainKey === "near-testnet") {
-      const url = env.rpcUrl || CHAIN_RPC[chainKey]!
-      const { ms, res, text } = await timedFetch(url.endsWith("/status") ? url : `${url.replace(/\/+$/, "")}/status`, {}, env.requestTimeoutMs)
-      if (!res.ok) return { id: "rpc", label: "NEAR RPC /status", ok: false, ms, detail: `HTTP ${res.status}`, error: text.slice(0, 200) }
-      const body = parseJson(text) as { chain_id?: string; sync_info?: { latest_block_height?: number } } | null
+      const request = nearStatusRequest(env.rpcUrl || CHAIN_RPC[chainKey]!)
+      const { ms, res, text } = await timedFetch(request.url, request.init, env.requestTimeoutMs)
+      if (!res.ok) return { id: "rpc", label: "NEAR RPC status", ok: false, ms, detail: `HTTP ${res.status}`, error: text.slice(0, 200) }
+      const body = (parseJson(text) as { result?: { chain_id?: string; sync_info?: { latest_block_height?: number } } } | null)?.result
       const height = body?.sync_info?.latest_block_height
       return {
         id: "rpc",
-        label: "NEAR RPC /status",
+        label: "NEAR RPC status",
         ok: true,
         ms,
         detail: `${body?.chain_id ?? "testnet"} @ height ${height ?? "?"}`,

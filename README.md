@@ -18,7 +18,7 @@ client would, times every piece in ms, and shows what is working vs wrong.
 | `GET /api/rounds?limit=1` | history readable |
 | agent stats on `AGENT_URL` | swarm status, stake p50/p90, money, recent averages. A miss does not change the verdict |
 | `WS /ws` | connect ms, first `snapshot` or `round` msg ms, `lag` echo round-trip ms |
-| chain RPC | EVM `eth_chainId` + `eth_blockNumber`, or NEAR `/status`; the NEAR RPC card also shows every market-configured endpoint, its backoff, last latency, success/failure counts, and last error |
+| chain RPC | EVM `eth_chainId` + `eth_blockNumber`, or NEAR JSON-RPC `status`; the NEAR RPC card also shows every market-configured endpoint, its backoff, last latency, success/failure counts, and last error |
 
 Overall is `ok` / `degraded` (non-critical fails, e.g. RPC) / `down`
 (a critical piece — config, state, or ws — fails). Agent stats ride along
@@ -34,6 +34,11 @@ renders these in the “crash reasons · restarts · outage” card; `/api/histo
 samples keep `downReason` + `bootId` so sparse crashes stay visible.
 
 ## Run locally
+
+For the simplest complete demo, clone this repo beside `quick-market` and
+`quick-market-agent`, install each repo, and run `bun run demo` from the market
+repo. That launcher supplies the local health configuration automatically.
+See the [main judge guide](https://github.com/ED3N-Foundries/quick-market#run-the-complete-demo-locally).
 
 ```bash
 cp .env.example .env   # optional; defaults target http://127.0.0.1:3001

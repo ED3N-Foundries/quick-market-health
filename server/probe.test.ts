@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { internalFrom, loadHealthEnv, wsFromHttp } from "./env"
 import { agentAvg, avgMs, pushHistory, uptimePct, withAgentAverages } from "./history"
-import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, parseFunding, parseHangs, parseNearRpcStatus, parseSelfTail, parseTailMap, probeAgent, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
+import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, nearStatusRequest, parseFunding, parseHangs, parseNearRpcStatus, parseSelfTail, parseTailMap, probeAgent, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
 import { parseAgentStats } from "./agents"
 
 describe("wsFromHttp", () => {
@@ -45,6 +45,16 @@ describe("parseFunding", () => {
     expect(parsed?.chains[0]?.treasury).toBe("0x826020c36F4e1b6320e5E3dCade1a888E9fbDeF6")
     expect(parsed?.chains[0]?.native.short).toBe(true)
     expect(JSON.stringify(parsed)).not.toContain("privateKey")
+  })
+})
+
+describe("nearStatusRequest", () => {
+  test("uses the JSON-RPC status method supported by provider endpoints", () => {
+    const request = nearStatusRequest("https://near-testnet.drpc.org")
+    expect(request.url).toBe("https://near-testnet.drpc.org")
+    expect(request.init.method).toBe("POST")
+    expect(JSON.parse(String(request.init.body))).toMatchObject({ jsonrpc: "2.0", method: "status", params: [] })
+    expect(nearStatusRequest("https://rpc.testnet.near.org/status").url).toBe("https://rpc.testnet.near.org")
   })
 })
 
