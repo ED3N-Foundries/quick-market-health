@@ -130,6 +130,7 @@ th.sortable:hover { color:var(--txt); }
 <thead><tr><th>endpoint</th><th>state</th><th>last call</th><th>attempts</th><th>last success</th><th>last error</th></tr></thead>
 <tbody id="nearrpc"><tr><td colspan="6" class="dim">waiting for first probe…</td></tr></tbody>
 </table></div></section>
+<section class="card"><h2>NEAR deposits</h2><div id="deposits" class="kv">waiting for first probe…</div></section>
 <section class="card"><h2>containers</h2><div class="tblwrap"><table class="wide">
 <thead><tr><th>container</th><th>state</th><th>health</th><th>uptime</th><th>restarts</th><th>exit</th><th>cpu</th><th>mem</th></tr></thead>
 <tbody id="containers"><tr><td colspan="8" class="dim">waiting for first probe…</td></tr></tbody>
@@ -166,6 +167,7 @@ const containersEl = document.getElementById('containers');
 const checksEl = document.getElementById('checks');
 const nearRpcEl = document.getElementById('nearrpc');
 const rpcMetaEl = document.getElementById('rpcmeta');
+const depositsEl = document.getElementById('deposits');
 const speedsEl = document.getElementById('speeds');
 const stateEl = document.getElementById('state');
 const agentsEl = document.getElementById('agents');
@@ -343,6 +345,38 @@ function renderNearRpc(r){
       '<td>' + (x.lastError ? '<span class="err">' + esc(x.lastError) + '</span>' : '<span class="dim">none</span>') + '</td></tr>';
   }).join('');
 }
+function renderDeposits(r){
+  const d = r.nearDeposit;
+  if (!d || !d.source) {
+    depositsEl.innerHTML = '<span class="dim">market did not report deposit state — unreachable, NEAR runtime off, or pre-D1 version</span>';
+    return;
+  }
+  const kv = (k,v) => '<div><b>'+k+'</b><span>'+v+'</span></div>';
+  const indexer = d.source === 'indexer';
+  const healthy = indexer && !d.lastError && (d.downForMs == null || d.downForMs < 60000);
+  const state = indexer
+    ? (healthy ? '<span class="dot ok"></span>indexer (NearBlocks feed)' : '<span class="dot bad"></span>indexer · failing')
+    : '<span class="dot bad"></span>block walk (fallback)';
+  const parts = String(d.indexUrl || '').split('/');
+  const host = parts.length > 2 ? parts[2] : d.indexUrl || 'not configured';
+  let html =
+    kv('discovery', state + '<div class="dim">' + esc(host) + '</div>') +
+    kv('last poll', d.lastPollAt != null ? fmtAge(Math.max(0, r.at - d.lastPollAt)) + ' ago' : '—') +
+    kv('last green', d.lastOkAt != null ? fmtAge(Math.max(0, r.at - d.lastOkAt)) + ' ago' : '—') +
+    kv('marker', d.marker && d.marker.blockHeight != null
+      ? 'block ' + fmtCount(d.marker.blockHeight) + (d.markerAt != null ? '<div class="dim">' + fmtAge(Math.max(0, r.at - d.markerAt)) + ' ago</div>' : '')
+      : 'no verified events yet') +
+    kv('credits', fmtCount(d.credits) + ' · transfers seen ' + fmtCount(d.transfersSeen) + ' · events ' + fmtCount(d.eventsSeen)) +
+    kv('hint mismatches', (d.hintMismatches ?? 0) + (d.hintMismatches ? ' — index said a transfer the chain did not confirm' : '')) +
+    kv('last event', d.lastEventBlock != null ? 'block ' + fmtCount(d.lastEventBlock) : '—');
+  if (!indexer) {
+    html += kv('cursor / head', fmtCount(d.cursor) + ' / ' + fmtCount(d.head)) +
+      kv('lag', fmtCount(d.lag) + ' blocks · ' + esc(d.mode || '—') +
+        (d.skipped && d.skipped.length ? '<div class="err">' + d.skipped.length + ' skipped pruned range(s), oldest ' + fmtDT(d.skipped[0].at) + '</div>' : ''));
+  }
+  if (d.lastError) html += '<div class="err" style="grid-column:1/-1">' + esc(d.lastError) + '</div>';
+  depositsEl.innerHTML = html;
+}
 async function tick(){
   try {
     const [r, h] = await Promise.all([
@@ -387,6 +421,7 @@ async function tick(){
     const kv = (k,v) => '<div><b>'+k+'</b><span>'+esc(v)+'</span></div>';
     renderSpeeds(r, h);
     renderNearRpc(r);
+    renderDeposits(r);
     renderHangs(r);
     stateEl.innerHTML =
       kv('chain', (s.chainKey??'—') + ' / ' + (s.chainName??'')) +

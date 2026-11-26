@@ -155,6 +155,8 @@ export type HealthReport = {
   nearRpc: NearRpcHealth[] | null
   /** Funding-plane cooldown from /api/status (`nearCooldown`). Null when unknown. */
   nearCooldown: NearCooldownHealth | null
+  /** Deposit discovery state (D1): indexer poll or fallback walk. Null on pre-D1 markets. */
+  nearDeposit: NearDepositHealth | null
   /** Previous market run info (crash reason survives restarts), null when unknown. */
   previous: MarketPrevious
   tracking: TrackerState
@@ -668,11 +670,75 @@ export type NearCooldownHealth = {
   reason: string | null
 }
 
+/** D1 deposit discovery state from the market's internal /api/status
+ *  (`nearDeposit`). Null when the market is unreachable or pre-D1. */
+export type NearDepositHealth = {
+  source: "indexer" | "scan" | null
+  lastPollAt: number | null
+  lastOkAt: number | null
+  lastError: string | null
+  eventsSeen: number | null
+  lastEventBlock: number | null
+  indexUrl: string | null
+  credits: number | null
+  transfersSeen: number | null
+  hintMismatches: number | null
+  downForMs: number | null
+  markerAt: number | null
+  marker: { blockHeight: number | null; eventIndex: number | null; receiptId: string | null } | null
+  skipped: { from: number | null; to: number | null; at: number | null }[]
+  /** Scan-mode only. Absent (null) while the indexer poll is green. */
+  cursor: number | null
+  head: number | null
+  lag: number | null
+  mode: "normal" | "catchup" | null
+}
+
+export function parseNearDepositHealth(value: unknown): NearDepositHealth | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const source = row.source === "indexer" || row.source === "scan" ? row.source : null
+  if (!source) return null
+  const markerRaw = row.marker && typeof row.marker === "object" && !Array.isArray(row.marker) ? (row.marker as Record<string, unknown>) : null
+  const skippedRaw = Array.isArray(row.skipped) ? row.skipped.slice(0, 10) : []
+  const skipped = skippedRaw.flatMap((item) => {
+    if (!item || typeof item !== "object") return []
+    const entry = item as Record<string, unknown>
+    const from = numOrNull(entry.from)
+    const to = numOrNull(entry.to)
+    if (from == null && to == null) return []
+    return [{ from, to, at: numOrNull(entry.at) }]
+  })
+  return {
+    source,
+    lastPollAt: numOrNull(row.lastPollAt),
+    lastOkAt: numOrNull(row.lastOkAt),
+    lastError: strOrNull(row.lastError),
+    eventsSeen: numOrNull(row.eventsSeen),
+    lastEventBlock: numOrNull(row.lastEventBlock),
+    indexUrl: strOrNull(row.indexUrl),
+    credits: numOrNull(row.credits),
+    transfersSeen: numOrNull(row.transfersSeen),
+    hintMismatches: numOrNull(row.hintMismatches),
+    downForMs: numOrNull(row.downForMs),
+    markerAt: numOrNull(row.markerAt),
+    marker: markerRaw
+      ? { blockHeight: numOrNull(markerRaw.blockHeight), eventIndex: numOrNull(markerRaw.eventIndex), receiptId: strOrNull(markerRaw.receiptId, 128) }
+      : null,
+    skipped,
+    cursor: numOrNull(row.cursor),
+    head: numOrNull(row.head),
+    lag: numOrNull(row.lag),
+    mode: row.mode === "normal" || row.mode === "catchup" ? row.mode : null,
+  }
+}
+
 type ProcessProbe = {
   process: MarketProcess
   previous: MarketPrevious
   nearRpc: NearRpcHealth[] | null
   nearCooldown: NearCooldownHealth | null
+  nearDeposit: NearDepositHealth | null
   liveChains: string[] | null
   reached: boolean
   hangs: HangSummary
@@ -969,7 +1035,7 @@ async function probeFunding(env: HealthEnv): Promise<FundingSnapshot | null> {
 }
 
 async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
-  const empty = (): ProcessProbe => ({ process: null, previous: null, nearRpc: null, nearCooldown: null, liveChains: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
+  const empty = (): ProcessProbe => ({ process: null, previous: null, nearRpc: null, nearCooldown: null, nearDeposit: null, liveChains: null, reached: false, hangs: { recent: [], count: null, maxMs: null, lastTs: null }, routeTails: {}, queryTails: {}, selfTail: null })
   // Internal port only. The public /api/health answer is liveness and has no process body.
   for (const path of ["/api/status", "/api/health"]) {
     try {
@@ -984,6 +1050,7 @@ async function probeMarketProcess(env: HealthEnv): Promise<ProcessProbe> {
         previous,
         nearRpc: parseNearRpcStatus(obj.nearRpc),
         nearCooldown: parseNearCooldown(obj.nearCooldown),
+        nearDeposit: parseNearDepositHealth(obj.nearDeposit),
         liveChains: parseLiveChains(obj, null),
         reached: true,
         hangs: parseHangs(obj.hangs),
@@ -1242,6 +1309,7 @@ export async function runProbe(env: HealthEnv, prevTracking: TrackerState = empt
     process: proc.process,
     nearRpc: proc.nearRpc,
     nearCooldown: proc.nearCooldown,
+    nearDeposit: proc.nearDeposit,
     previous: proc.previous,
     tracking,
     hangs: proc.hangs,

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { internalFrom, loadHealthEnv, wsFromHttp } from "./env"
 import { agentAvg, avgMs, pushHistory, uptimePct, withAgentAverages } from "./history"
-import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, nearStatusRequest, parseFunding, parseHangs, parseNearRpcStatus, parseSelfTail, parseTailMap, probeAgent, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
+import { classifyOverall, containerHintFor, emptyTracker, formatAge, formatMs, isLiveSocketMessage, nearStatusRequest, parseFunding, parseHangs, parseNearDepositHealth, parseNearRpcStatus, parseSelfTail, parseTailMap, probeAgent, summarizeDownReason, updateTracker, venueIsStale } from "./probe"
 import { parseAgentStats } from "./agents"
 
 describe("wsFromHttp", () => {
@@ -87,6 +87,50 @@ describe("parseNearRpcStatus", () => {
     expect(parsed?.[0]?.quietForMs).toBe(750)
     expect(parseNearRpcStatus(undefined)).toBeNull()
     expect(parseNearRpcStatus([])).toEqual([])
+  })
+})
+
+describe("parseNearDepositHealth", () => {
+  test("keeps the indexer facts and the scan-only cursor fields", () => {
+    const parsed = parseNearDepositHealth({
+      source: "scan",
+      lastPollAt: 111,
+      lastOkAt: null,
+      lastError: "NEAR deposit index returned HTTP 500",
+      eventsSeen: 250,
+      lastEventBlock: 279107390,
+      indexUrl: null,
+      credits: 0,
+      transfersSeen: 0,
+      hintMismatches: 0,
+      downForMs: 900000,
+      marker: null,
+      markerAt: null,
+      skipped: [{ from: 1, to: 9, at: 5 }, { bad: true }],
+      cursor: 278948680,
+      head: 279160918,
+      lag: 212238,
+      mode: "catchup",
+    })
+    expect(parsed?.source).toBe("scan")
+    expect(parsed?.downForMs).toBe(900000)
+    expect(parsed?.skipped).toEqual([{ from: 1, to: 9, at: 5 }])
+    expect(parsed?.cursor).toBe(278948680)
+    expect(parsed?.mode).toBe("catchup")
+    const green = parseNearDepositHealth({
+      source: "indexer",
+      lastOkAt: 120,
+      eventsSeen: 3,
+      credits: 1,
+      marker: { blockHeight: 300, eventIndex: 0, receiptId: "Rc300" },
+      markerAt: 119,
+      skipped: [],
+    })
+    expect(green?.source).toBe("indexer")
+    expect(green?.cursor).toBe(null)
+    expect(green?.marker).toEqual({ blockHeight: 300, eventIndex: 0, receiptId: "Rc300" })
+    expect(parseNearDepositHealth(undefined)).toBeNull()
+    expect(parseNearDepositHealth({ source: "nope" })).toBeNull()
   })
 })
 
