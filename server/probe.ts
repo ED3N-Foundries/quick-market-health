@@ -673,7 +673,7 @@ export type NearCooldownHealth = {
 /** D1 deposit discovery state from the market's internal /api/status
  *  (`nearDeposit`). Null when the market is unreachable or pre-D1. */
 export type NearDepositHealth = {
-  source: "indexer" | "scan" | null
+  source: "indexer" | "scan" | "off" | null
   lastPollAt: number | null
   lastOkAt: number | null
   lastError: string | null
@@ -697,7 +697,7 @@ export type NearDepositHealth = {
 export function parseNearDepositHealth(value: unknown): NearDepositHealth | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
   const row = value as Record<string, unknown>
-  const source = row.source === "indexer" || row.source === "scan" ? row.source : null
+  const source = row.source === "indexer" || row.source === "scan" || row.source === "off" ? row.source : null
   if (!source) return null
   const markerRaw = row.marker && typeof row.marker === "object" && !Array.isArray(row.marker) ? (row.marker as Record<string, unknown>) : null
   const skippedRaw = Array.isArray(row.skipped) ? row.skipped.slice(0, 10) : []

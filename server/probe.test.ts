@@ -132,6 +132,30 @@ describe("parseNearDepositHealth", () => {
     expect(parseNearDepositHealth(undefined)).toBeNull()
     expect(parseNearDepositHealth({ source: "nope" })).toBeNull()
   })
+
+  test("accepts ledger-only source off without a scan countdown", () => {
+    const parsed = parseNearDepositHealth({
+      source: "off",
+      lastPollAt: null,
+      lastOkAt: null,
+      lastError: null,
+      eventsSeen: 0,
+      credits: 0,
+      transfersSeen: 0,
+      hintMismatches: 0,
+      downForMs: null,
+      marker: null,
+      markerAt: null,
+      skipped: [],
+      indexUrl: null,
+    })
+    expect(parsed?.source).toBe("off")
+    expect(parsed?.lastError).toBeNull()
+    expect(parsed?.cursor).toBeNull()
+    expect(parsed?.head).toBeNull()
+    expect(parsed?.lag).toBeNull()
+    expect(parsed?.mode).toBeNull()
+  })
 })
 
 describe("loadHealthEnv", () => {

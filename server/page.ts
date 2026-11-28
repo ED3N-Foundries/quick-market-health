@@ -352,6 +352,11 @@ function renderDeposits(r){
     return;
   }
   const kv = (k,v) => '<div><b>'+k+'</b><span>'+v+'</span></div>';
+  if (d.source === 'off') {
+    depositsEl.innerHTML = kv('discovery', '<span class="dot unused"></span>off · ledger-only') +
+      kv('door', 'NEAR deposits and the block walk are idle. Grants credit the ledger.');
+    return;
+  }
   const indexer = d.source === 'indexer';
   const healthy = indexer && !d.lastError && (d.downForMs == null || d.downForMs < 60000);
   const state = indexer
